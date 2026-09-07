@@ -2,11 +2,15 @@ name: Deploy to Prod
 
 on:
   workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "deploy" to confirm production deployment'
+        required: true
 
 jobs:
   deploy-prod:
     runs-on: ubuntu-latest
-    environment: production
+    if: github.event.inputs.confirm == 'deploy'
     steps:
       - uses: actions/checkout@v4
 
