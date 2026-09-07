@@ -1,0 +1,29 @@
+[project]
+id = "xkrszbmmdaorivkatvwh"
+
+[db]
+port = 5432
+
+[studio]
+enabled = false
+
+[auth]
+enabled = true
+
+[functions.wechat-auth]
+verify_jwt = false
+
+[functions.wechat-content-check]
+verify_jwt = false
+
+[functions.send-verification-code]
+verify_jwt = true
+
+[functions.verify-and-update]
+verify_jwt = true
+
+[functions.check-member-info]
+verify_jwt = false
+
+[functions.delete-storage-file]
+verify_jwt = false
