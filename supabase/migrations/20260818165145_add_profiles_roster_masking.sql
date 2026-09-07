@@ -20,9 +20,6 @@
 --   phone_number, join_date, created_at, is_section_leader,
 --   hide_email, hide_phone, hide_join_date
 --   其中 email / phone_number / join_date 为 CASE 掩码列。
---
--- 回滚：DROP VIEW public.profiles_roster; 后恢复表级授权（见仓库 docs/issue-193 相关记录），
---   GRANT SELECT ON public.profiles TO anon, authenticated; 即可还原全列开放。
 
 BEGIN;
 

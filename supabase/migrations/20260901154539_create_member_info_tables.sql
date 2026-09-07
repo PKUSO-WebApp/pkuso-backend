@@ -12,7 +12,7 @@ CREATE TABLE public.import_config (
   -- 格式: [{"excel_header": "1、您的声部", "target_field": "instrument_code"}, ...]
   instrument_map JSONB NOT NULL DEFAULT '{}'::JSONB,
   -- 格式: {"1": "女高音", "2": "女低音", ...}
-  year INT NOT NULL EXTRACT(YEAR FROM NOW()),
+  year INT NOT NULL DEFAULT EXTRACT(YEAR FROM NOW())::INT,
   updated_at TIMESTAMPTZ DEFAULT NOW(),
   CONSTRAINT single_row_check CHECK (id = 1)
 );
@@ -22,7 +22,7 @@ CREATE TABLE public.member_info (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   full_name TEXT NOT NULL,
   instrument_code INT,
-  instrument_name TEXT,  -- 冗余存储映射后的乐器名称，便于查询
+  instrument_name TEXT,
   email TEXT,
   college TEXT,
   grade TEXT,

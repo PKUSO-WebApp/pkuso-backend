@@ -12,8 +12,6 @@
 --     "service role 只在 API route 中用于管理员操作" 的约定。
 --   - service role 属于 table owner（postgres），不受 RLS 限制，读写不受影响。
 --
--- 幂等性：CREATE TABLE 不幂等，重复执行会报 already exists，属预期行为。
---
 -- 回滚方案：
 --   DROP TABLE IF EXISTS app_settings;
 

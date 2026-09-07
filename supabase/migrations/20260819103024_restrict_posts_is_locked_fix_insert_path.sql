@@ -1,4 +1,6 @@
 -- 迁移说明：非 admin 禁止设置 posts.is_locked（Issue #212 成员禁止锁定/解锁自己的帖子）
+-- 返工修复：触发器从 BEFORE UPDATE OF is_locked 扩展为 BEFORE INSERT OR UPDATE OF is_locked，
+-- 拦截成员经 INSERT 携带 is_locked=true 创建锁定帖的路径（对抗测试击破点）。
 --
 -- 背景：
 --   posts 现有 RLS「作者或管理员可更新」「所有人可插入（author_id=自己）」允许
@@ -25,10 +27,8 @@
 --      参考 trigger_set_rehearsals_updated_at / function_set_rehearsals_updated_at）。
 --
 -- 幂等性：
---   - 函数：CREATE OR REPLACE
+--   - 函数：CREATE OR REPLACE（覆盖旧 UPDATE-only 版本）
 --   - 触发器：DROP TRIGGER IF EXISTS + CREATE TRIGGER
---   已应用环境的修复重放：直接重放本文件（函数 CREATE OR REPLACE 覆盖旧定义，
---   触发器先 DROP 后 CREATE 覆盖旧触发器）。
 -- 回滚：DROP TRIGGER trigger_restrict_posts_is_locked ON public.posts;
 --       DROP FUNCTION public.function_restrict_posts_is_locked();
 -- 不涉及 schema 变更，gen-types 产物无变化。
