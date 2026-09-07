@@ -65,14 +65,13 @@ PKUSO 后端仓库 — 数据库 schema、Edge Functions、类型定义的唯一
 3. `supabase gen types` → 更新 `types/database.types.ts`
 4. 自动向前端仓库发 PR 同步类型
 
-### prod 环境（手动审批）
+### prod 环境（手动触发）
 
-在 GitHub Actions 中手动触发 `Deploy to Prod` workflow：
+在 GitHub Actions 中手动触发 `Deploy to Prod` workflow，输入 `deploy` 确认：
 
-1. 需要手动审批（`environment: production`）
-2. `supabase db push` → 应用 migration 到 prod
-3. `supabase functions deploy` → 部署 Edge Functions 到 prod
-4. `supabase gen types` → 更新 `types/database.types.ts`
+1. `supabase db push` → 应用 migration 到 prod
+2. `supabase functions deploy` → 部署 Edge Functions 到 prod
+3. `supabase gen types` → 更新 `types/database.types.ts`
 
 ## 新增后端变更流程
 
