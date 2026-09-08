@@ -7,6 +7,7 @@ on:
       - 'supabase/migrations/**'
       - 'supabase/functions/**'
       - 'supabase/config.toml'
+      - '.github/workflows/sync-dev.yml'
 
 permissions:
   contents: write
