@@ -42,9 +42,11 @@ Deno.serve(async (req) => {
   }
 
   let code = ''
+  let mode: 'login' | 'register' = 'login'
   try {
-    const body = (await req.json()) as { code?: unknown }
+    const body = (await req.json()) as { code?: unknown; mode?: unknown }
     code = typeof body.code === 'string' ? body.code.trim() : ''
+    if (body.mode === 'register') mode = 'register'
   } catch {
     return json(400, { error: 'invalid json body' })
   }
@@ -95,7 +97,17 @@ Deno.serve(async (req) => {
       return json(500, { error: 'get user failed' })
     }
     email = userData.user.email
+
+    // mode="login" 且邮箱为合成邮箱（用户未完成注册）→ 返回 user_not_found
+    if (mode === 'login' && email.endsWith('@placeholder.local')) {
+      return json(200, { error: 'user_not_found' })
+    }
   } else {
+    // mode="login" 且用户不存在 → 返回 user_not_found（由前端弹窗引导注册）
+    if (mode === 'login') {
+      return json(200, { error: 'user_not_found' })
+    }
+
     isNew = true
     email = `wechat_${openid}@placeholder.local`
 

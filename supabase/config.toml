@@ -25,5 +25,14 @@ verify_jwt = true
 [functions.check-member-info]
 verify_jwt = false
 
+[functions.send-login-code]
+verify_jwt = false
+
+[functions.login-with-code]
+verify_jwt = false
+
+[functions.register-with-wechat]
+verify_jwt = false
+
 [functions.delete-storage-file]
 verify_jwt = false
