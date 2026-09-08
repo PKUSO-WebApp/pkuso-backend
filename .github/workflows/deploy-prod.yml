@@ -36,7 +36,7 @@ jobs:
       - name: Get dev migration versions
         id: dev-migrations
         run: |
-          DEV_VERSIONS=$(supabase migration list --linked --output-format json | jq -r '.[].version' | sort)
+          DEV_VERSIONS=$(supabase migration list --linked --output-format json | jq -r '.migrations[].remote // empty' | sort)
           echo "versions=$DEV_VERSIONS" >> "$GITHUB_OUTPUT"
           echo "Dev migration versions:"
           echo "$DEV_VERSIONS"
@@ -51,7 +51,7 @@ jobs:
       - name: Get prod migration versions
         id: prod-migrations
         run: |
-          PROD_VERSIONS=$(supabase migration list --linked --output-format json | jq -r '.[].version' | sort)
+          PROD_VERSIONS=$(supabase migration list --linked --output-format json | jq -r '.migrations[].remote // empty' | sort)
           echo "versions=$PROD_VERSIONS" >> "$GITHUB_OUTPUT"
           echo "Prod migration versions:"
           echo "$PROD_VERSIONS"
