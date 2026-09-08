@@ -500,6 +500,7 @@ export type Database = {
           time?: string | null
           title?: string | null
           type?: string | null
+          updated_at?: string
           updated_fields?: string | null
         }
         Relationships: []
@@ -848,7 +849,6 @@ export type Database = {
           session_token: string
         }[]
       }
-      upload_test_image: { Args: never; Returns: undefined }
       verify_and_use_invitation_code: {
         Args: { p_code: string; p_user_id: string }
         Returns: {
