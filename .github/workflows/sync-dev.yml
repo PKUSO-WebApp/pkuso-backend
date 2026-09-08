@@ -5,7 +5,7 @@ on:
     branches: [main]
     paths:
       - 'supabase/migrations/**'
-      - 'functions/**'
+      - 'supabase/functions/**'
       - 'supabase/config.toml'
 
 jobs:
@@ -33,7 +33,7 @@ jobs:
 
       - name: Deploy edge functions to dev
         run: |
-          for fn in functions/*/; do
+          for fn in supabase/functions/*/; do
             name=$(basename "$fn")
             echo "Deploying $name..."
             supabase functions deploy "$name" --no-verify-jwt
