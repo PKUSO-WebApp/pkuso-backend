@@ -16,26 +16,6 @@ PKUSO 后端仓库 — 数据库 schema、Edge Functions、类型定义的唯一
 
 ## ⚠️ 核心规则
 
-### 禁止直接操作数据库
-
-**所有后端变更（DDL / RLS / 函数 / 触发器 / Edge Functions）必须通过本仓库的 CI 流水线部署。**
-
-- ❌ 禁止通过 MCP `apply_migration` 直接修改数据库
-- ❌ 禁止通过 MCP `execute_sql` 执行 DDL
-- ❌ 禁止通过 MCP `deploy_edge_function` 直接部署
-- ❌ 禁止通过 Supabase Dashboard 修改 schema
-
-### MCP 操作审计
-
-如果因紧急情况必须通过 MCP 直接操作，必须：
-
-1. 执行操作
-2. 在 `audit/` 目录创建审计文件：`audit/YYYY-MM-DD_<简述>.md`
-3. 补录对应的 migration 文件到 `supabase/migrations/`
-4. 提交到 git
-
-审计文件格式见 `audit/README.md`。
-
 ### Migration 管理
 
 - 所有 migration 文件放在 `supabase/migrations/` 目录
