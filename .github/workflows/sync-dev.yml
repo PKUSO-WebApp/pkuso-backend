@@ -8,6 +8,9 @@ on:
       - 'supabase/functions/**'
       - 'supabase/config.toml'
 
+permissions:
+  contents: write
+
 jobs:
   deploy-dev:
     runs-on: ubuntu-latest
