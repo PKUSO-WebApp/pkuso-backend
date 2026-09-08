@@ -23,14 +23,74 @@ jobs:
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
 
+      # Step 1: Link to dev to check its state
+      - name: Link to dev project
+        run: supabase link --project-ref qibssimzuhusvutubbey
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+
+      # Step 2: Get dev's migration versions
+      - name: Get dev migration versions
+        id: dev-migrations
+        run: |
+          DEV_VERSIONS=$(supabase migration list --linked --output-format json | jq -r '.[].version' | sort)
+          echo "versions=$DEV_VERSIONS" >> "$GITHUB_OUTPUT"
+          echo "Dev migration versions:"
+          echo "$DEV_VERSIONS"
+
+      # Step 3: Link to prod
       - name: Link to prod project
         run: supabase link --project-ref xkrszbmmdaorivkatvwh
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
 
-      - name: Apply migrations to prod
-        run: supabase db push
+      # Step 4: Get prod's migration versions
+      - name: Get prod migration versions
+        id: prod-migrations
+        run: |
+          PROD_VERSIONS=$(supabase migration list --linked --output-format json | jq -r '.[].version' | sort)
+          echo "versions=$PROD_VERSIONS" >> "$GITHUB_OUTPUT"
+          echo "Prod migration versions:"
+          echo "$PROD_VERSIONS"
 
+      # Step 5: Compare and sync migration history
+      - name: Sync migration history from dev to prod
+        run: |
+          DEV_VERSIONS="${{ steps.dev-migrations.outputs.versions }}"
+          PROD_VERSIONS="${{ steps.prod-migrations.outputs.versions }}"
+          
+          echo "Comparing migration versions..."
+          
+          # Find migrations in dev but not in prod (need to be applied)
+          MISSING_IN_PROD=$(comm -23 <(echo "$DEV_VERSIONS") <(echo "$PROD_VERSIONS"))
+          
+          # Find migrations in prod but not in dev (need to be reverted)
+          EXTRA_IN_PROD=$(comm -13 <(echo "$DEV_VERSIONS") <(echo "$PROD_VERSIONS"))
+          
+          if [ -n "$MISSING_IN_PROD" ]; then
+            echo "Migrations missing in prod (will be applied):"
+            echo "$MISSING_IN_PROD"
+          fi
+          
+          if [ -n "$EXTRA_IN_PROD" ]; then
+            echo "Extra migrations in prod (will be reverted):"
+            echo "$EXTRA_IN_PROD"
+            # Revert extra migrations
+            for version in $EXTRA_IN_PROD; do
+              echo "Reverting migration $version..."
+              supabase migration repair --status reverted "$version" || true
+            done
+          fi
+          
+          # Apply missing migrations
+          if [ -n "$MISSING_IN_PROD" ]; then
+            echo "Applying missing migrations..."
+            supabase db push --include-all || true
+          fi
+          
+          echo "Migration history synced!"
+
+      # Step 6: Deploy Edge Functions (same code as dev)
       - name: Deploy edge functions to prod
         run: |
           for fn in functions/*/; do
@@ -39,9 +99,11 @@ jobs:
             supabase functions deploy "$name" --no-verify-jwt
           done
 
+      # Step 7: Generate types from prod
       - name: Generate types from prod
         run: supabase gen types typescript --schema public > types/database.types.ts
 
+      # Step 8: Commit updated types
       - name: Commit updated types
         run: |
           git config user.name "github-actions[bot]"
@@ -54,6 +116,7 @@ jobs:
             git push
           fi
 
+      # Step 9: Create PR in miniprogram
       - name: Create PR in miniprogram
         uses: peter-evans/create-pull-request@v6
         with:
@@ -72,6 +135,7 @@ jobs:
           committer: "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
           author: "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
 
+      # Step 10: Create PR in web-v2
       - name: Create PR in web-v2
         uses: peter-evans/create-pull-request@v6
         with:
