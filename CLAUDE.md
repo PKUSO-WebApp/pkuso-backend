@@ -4,8 +4,8 @@ PKUSO 后端仓库 — 数据库 schema、Edge Functions、类型定义的唯一
 
 ## 关联项目
 
-- 小程序端：`../pkuso-miniprogram`（`C:\Users\dddam\Desktop\pkusoweb\pkuso-miniprogram`）
-- Web 管理端：`../pkuso-web-v2`（`C:\Users\dddam\Desktop\pkusoweb\pkuso-web-v2`）
+- 小程序端：`../pkuso-mp`（`C:\Users\dddam\Desktop\pkusoweb\pkuso-mp`）
+- Web 管理端：`../pkuso-web`（`C:\Users\dddam\Desktop\pkusoweb\pkuso-web`）
 
 ## Supabase 双环境
 
