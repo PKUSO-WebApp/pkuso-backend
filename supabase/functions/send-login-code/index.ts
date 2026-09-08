@@ -176,10 +176,10 @@ Deno.serve(async (req) => {
     return ok({ success: true }) // 静默，不暴露查询错误
   }
 
-  // 无论用户是否存在，都返回 success（防枚举）
-  // 但只有已注册用户才真正发邮件
+  // 用户不存在时返回 user_not_found（前端引导注册）
+  // 注意：这会暴露用户是否存在，但登录场景下可接受（用户已输入邮箱）
   if (!profile) {
-    return ok({ success: true })
+    return ok({ error: 'user_not_found' })
   }
 
   const userId = profile.id
