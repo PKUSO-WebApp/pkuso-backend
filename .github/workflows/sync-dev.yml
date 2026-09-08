@@ -1,6 +1,7 @@
 name: Sync to Dev
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
@@ -46,6 +47,9 @@ jobs:
       - name: Generate types from dev
         run: supabase gen types typescript --schema public > types/database.types.ts
 
+      - name: Prepare types for frontend repos
+        run: mkdir -p src/types && cp types/database.types.ts src/types/database.types.ts
+
       - name: Commit updated types
         run: |
           git config user.name "github-actions[bot]"
@@ -61,7 +65,7 @@ jobs:
       - name: Create PR in miniprogram
         uses: peter-evans/create-pull-request@v6
         with:
-          repository: PKUSO-WebApp/pkuso-miniprogram
+          repository: PKUSO-WebApp/pkuso-mp
           token: ${{ secrets.CROSS_REPO_TOKEN }}
           branch: chore/sync-types-from-backend
           delete-branch: true
@@ -79,7 +83,7 @@ jobs:
       - name: Create PR in web-v2
         uses: peter-evans/create-pull-request@v6
         with:
-          repository: PKUSO-WebApp/pkuso-web-v2
+          repository: PKUSO-WebApp/pkuso-web
           token: ${{ secrets.CROSS_REPO_TOKEN }}
           branch: chore/sync-types-from-backend
           delete-branch: true
