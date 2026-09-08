@@ -36,7 +36,7 @@ jobs:
       - name: Get dev migration versions
         id: dev-migrations
         run: |
-          DEV_VERSIONS=$(supabase migration list --linked --output-format json | jq -r '.migrations[].remote // empty' | sort)
+          DEV_VERSIONS=$(supabase migration list --linked --output-format json | jq -r '.migrations[].remote // empty' | sort | tr '\n' ' ')
           echo "versions=$DEV_VERSIONS" >> "$GITHUB_OUTPUT"
           echo "Dev migration versions:"
           echo "$DEV_VERSIONS"
@@ -51,7 +51,7 @@ jobs:
       - name: Get prod migration versions
         id: prod-migrations
         run: |
-          PROD_VERSIONS=$(supabase migration list --linked --output-format json | jq -r '.migrations[].remote // empty' | sort)
+          PROD_VERSIONS=$(supabase migration list --linked --output-format json | jq -r '.migrations[].remote // empty' | sort | tr '\n' ' ')
           echo "versions=$PROD_VERSIONS" >> "$GITHUB_OUTPUT"
           echo "Prod migration versions:"
           echo "$PROD_VERSIONS"
@@ -64,11 +64,15 @@ jobs:
           
           echo "Comparing migration versions..."
           
+          # Convert space-separated to newline-separated for comm
+          DEV_LINES=$(echo "$DEV_VERSIONS" | tr ' ' '\n' | sort)
+          PROD_LINES=$(echo "$PROD_VERSIONS" | tr ' ' '\n' | sort)
+          
           # Find migrations in dev but not in prod (need to be applied)
-          MISSING_IN_PROD=$(comm -23 <(echo "$DEV_VERSIONS") <(echo "$PROD_VERSIONS"))
+          MISSING_IN_PROD=$(comm -23 <(echo "$DEV_LINES") <(echo "$PROD_LINES"))
           
           # Find migrations in prod but not in dev (need to be reverted)
-          EXTRA_IN_PROD=$(comm -13 <(echo "$DEV_VERSIONS") <(echo "$PROD_VERSIONS"))
+          EXTRA_IN_PROD=$(comm -13 <(echo "$DEV_LINES") <(echo "$PROD_LINES"))
           
           if [ -n "$MISSING_IN_PROD" ]; then
             echo "Migrations missing in prod (will be applied):"
