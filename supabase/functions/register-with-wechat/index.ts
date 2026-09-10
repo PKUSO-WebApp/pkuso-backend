@@ -165,7 +165,11 @@ Deno.serve(async (req) => {
   })
   if (authEmailError) {
     console.error('[register-with-wechat] auth email update error', authEmailError)
-    // 非致命：profile 已有正确邮箱，登录不依赖 auth.email
+    const msg = authEmailError.message ?? ''
+    if (msg.includes('email_exists') || msg.includes('already registered') || msg.includes('already in use')) {
+      return json(409, { error: 'email_already_registered' })
+    }
+    return json(500, { error: 'auth email update failed', detail: msg })
   }
 
   // 6. 轮换随机密码 → password grant 换 session
