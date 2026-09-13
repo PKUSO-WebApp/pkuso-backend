@@ -44,6 +44,7 @@ Deno.serve(async (req) => {
   let instrument = ''
   let college = ''
   let joinDate = ''
+  let isInOrchestra: boolean | null = null
 
   try {
     const body = (await req.json()) as Record<string, unknown>
@@ -53,6 +54,9 @@ Deno.serve(async (req) => {
     instrument = typeof body.instrument === 'string' ? body.instrument.trim() : ''
     college = typeof body.college === 'string' ? body.college.trim() : ''
     joinDate = typeof body.join_date === 'string' ? body.join_date.trim() : ''
+    if (typeof body.is_in_orchestra === 'boolean') {
+      isInOrchestra = body.is_in_orchestra
+    }
   } catch {
     return json(400, { error: 'invalid json body' })
   }
@@ -150,6 +154,7 @@ Deno.serve(async (req) => {
       college,
       join_date: joinDate,
       wechat_openid: openid,
+      is_in_orchestra: isInOrchestra,
     })
     .eq('id', userId)
 
