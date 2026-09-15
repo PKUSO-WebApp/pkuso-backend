@@ -9,8 +9,8 @@ USING (auth.uid() = user_id)
 WITH CHECK (
   auth.uid() = user_id 
   AND (
-    status = 'pending'::leaveStatus
-    OR status = 'withdrawn'::leaveStatus
-    OR status = 'canceled'::leaveStatus
+    status = 'pending'::public."leaveStatus"
+    OR status = 'withdrawn'::public."leaveStatus"
+    OR status = 'canceled'::public."leaveStatus"
   )
 );
