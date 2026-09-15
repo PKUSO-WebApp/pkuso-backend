@@ -106,19 +106,40 @@ export type Database = {
         Row: {
           content: string
           created_at: string
+          created_by: string | null
           id: string
+          is_anonymous: boolean
         }
         Insert: {
           content: string
           created_at?: string
+          created_by?: string | null
           id?: string
+          is_anonymous?: boolean
         }
         Update: {
           content?: string
           created_at?: string
+          created_by?: string | null
           id?: string
+          is_anonymous?: boolean
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "feedback_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "feedback_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "profiles_roster"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       import_config: {
         Row: {
