@@ -165,39 +165,6 @@ export type Database = {
         }
         Relationships: []
       }
-      invitation_codes: {
-        Row: {
-          code: string
-          created_at: string | null
-          created_by: string | null
-          expires_at: string | null
-          id: string
-          max_uses: number | null
-          used_by: string[] | null
-          used_count: number | null
-        }
-        Insert: {
-          code: string
-          created_at?: string | null
-          created_by?: string | null
-          expires_at?: string | null
-          id?: string
-          max_uses?: number | null
-          used_by?: string[] | null
-          used_count?: number | null
-        }
-        Update: {
-          code?: string
-          created_at?: string | null
-          created_by?: string | null
-          expires_at?: string | null
-          id?: string
-          max_uses?: number | null
-          used_by?: string[] | null
-          used_count?: number | null
-        }
-        Relationships: []
-      }
       leave_requests: {
         Row: {
           attachment_url: string | null
@@ -822,16 +789,6 @@ export type Database = {
         Args: { p_email: string; p_exclude_user_id: string }
         Returns: boolean
       }
-      check_invitation_code: {
-        Args: { p_code: string }
-        Returns: {
-          code: string
-          expires_at: string
-          id: string
-          max_uses: number
-          used_count: number
-        }[]
-      }
       get_my_profile_entry: {
         Args: never
         Returns: {
@@ -868,16 +825,6 @@ export type Database = {
         Returns: {
           session_started_at: string
           session_token: string
-        }[]
-      }
-      verify_and_use_invitation_code: {
-        Args: { p_code: string; p_user_id: string }
-        Returns: {
-          code: string
-          expires_at: string
-          id: string
-          used_by: string[]
-          used_count: number
         }[]
       }
     }
