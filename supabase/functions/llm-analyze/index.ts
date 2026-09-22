@@ -96,9 +96,9 @@ Instrument:`;
           generationConfig: {
             temperature: 0.1,
             maxOutputTokens: 100,
-          },
-          thinkingConfig: {
-            thinkingBudget: 0,
+            thinkingConfig: {
+              thinkingBudget: 0,
+            }
           }
         })
       }
