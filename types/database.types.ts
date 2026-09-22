@@ -639,6 +639,225 @@ export type Database = {
           },
         ]
       }
+      sheet_music: {
+        Row: {
+          composer: string | null
+          created_at: string | null
+          created_by: string | null
+          id: string
+          notes: string | null
+          title: string
+          updated_at: string | null
+        }
+        Insert: {
+          composer?: string | null
+          created_at?: string | null
+          created_by?: string | null
+          id?: string
+          notes?: string | null
+          title: string
+          updated_at?: string | null
+        }
+        Update: {
+          composer?: string | null
+          created_at?: string | null
+          created_by?: string | null
+          id?: string
+          notes?: string | null
+          title?: string
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "sheet_music_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sheet_music_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "profiles_roster"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      sheet_music_analysis_logs: {
+        Row: {
+          created_at: string | null
+          extracted_text: string | null
+          file_name: string
+          id: string
+          llm_result: Json | null
+          user_correction: Json | null
+        }
+        Insert: {
+          created_at?: string | null
+          extracted_text?: string | null
+          file_name: string
+          id?: string
+          llm_result?: Json | null
+          user_correction?: Json | null
+        }
+        Update: {
+          created_at?: string | null
+          extracted_text?: string | null
+          file_name?: string
+          id?: string
+          llm_result?: Json | null
+          user_correction?: Json | null
+        }
+        Relationships: []
+      }
+      sheet_music_distributions: {
+        Row: {
+          distributed_at: string | null
+          distributed_by: string | null
+          id: string
+          part_id: string | null
+          user_id: string | null
+        }
+        Insert: {
+          distributed_at?: string | null
+          distributed_by?: string | null
+          id?: string
+          part_id?: string | null
+          user_id?: string | null
+        }
+        Update: {
+          distributed_at?: string | null
+          distributed_by?: string | null
+          id?: string
+          part_id?: string | null
+          user_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "sheet_music_distributions_distributed_by_fkey"
+            columns: ["distributed_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sheet_music_distributions_distributed_by_fkey"
+            columns: ["distributed_by"]
+            isOneToOne: false
+            referencedRelation: "profiles_roster"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sheet_music_distributions_part_id_fkey"
+            columns: ["part_id"]
+            isOneToOne: false
+            referencedRelation: "sheet_music_parts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sheet_music_distributions_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sheet_music_distributions_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles_roster"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      sheet_music_files: {
+        Row: {
+          created_at: string | null
+          file_name: string
+          file_size: number | null
+          id: string
+          page_count: number | null
+          part_id: string | null
+          storage_path: string
+          uploaded_by: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          file_name: string
+          file_size?: number | null
+          id?: string
+          page_count?: number | null
+          part_id?: string | null
+          storage_path: string
+          uploaded_by?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          file_name?: string
+          file_size?: number | null
+          id?: string
+          page_count?: number | null
+          part_id?: string | null
+          storage_path?: string
+          uploaded_by?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "sheet_music_files_part_id_fkey"
+            columns: ["part_id"]
+            isOneToOne: false
+            referencedRelation: "sheet_music_parts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sheet_music_files_uploaded_by_fkey"
+            columns: ["uploaded_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sheet_music_files_uploaded_by_fkey"
+            columns: ["uploaded_by"]
+            isOneToOne: false
+            referencedRelation: "profiles_roster"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      sheet_music_parts: {
+        Row: {
+          created_at: string | null
+          id: string
+          instrument: string
+          sheet_music_id: string | null
+          sort_order: number | null
+        }
+        Insert: {
+          created_at?: string | null
+          id?: string
+          instrument: string
+          sheet_music_id?: string | null
+          sort_order?: number | null
+        }
+        Update: {
+          created_at?: string | null
+          id?: string
+          instrument?: string
+          sheet_music_id?: string | null
+          sort_order?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "sheet_music_parts_sheet_music_id_fkey"
+            columns: ["sheet_music_id"]
+            isOneToOne: false
+            referencedRelation: "sheet_music"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       system_notifications: {
         Row: {
           content: string
@@ -838,7 +1057,7 @@ export type Database = {
         | "canceled"
       notificationCategory: "attendance" | "activity" | "system"
       postType: "ensemble" | "gathering"
-      profileRole: "member" | "admin"
+      profileRole: "member" | "admin" | "score_manager"
       profileStatus: "pending" | "approved" | "rejected"
     }
     CompositeTypes: {
@@ -971,7 +1190,7 @@ export const Constants = {
       leaveStatus: ["pending", "approved", "rejected", "withdrawn", "canceled"],
       notificationCategory: ["attendance", "activity", "system"],
       postType: ["ensemble", "gathering"],
-      profileRole: ["member", "admin"],
+      profileRole: ["member", "admin", "score_manager"],
       profileStatus: ["pending", "approved", "rejected"],
     },
   },
