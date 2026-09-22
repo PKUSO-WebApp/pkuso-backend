@@ -33,3 +33,9 @@ verify_jwt = false
 
 [functions.delete-storage-file]
 verify_jwt = false
+
+[functions.ocr-analyze]
+verify_jwt = true
+
+[functions.llm-analyze]
+verify_jwt = true
