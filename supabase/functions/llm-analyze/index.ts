@@ -20,6 +20,23 @@ const VALID_INSTRUMENTS = [
 function normalizeInstrument(raw: string): string {
   const normalized = raw.trim();
   
+  // 打击乐器归一化映射
+  const PERCUSSION_MAP: Record<string, string> = {
+    'Timpani': 'Percussion',
+    'Drums': 'Percussion',
+    'Triangle': 'Percussion',
+    'Cymbals': 'Percussion',
+    '定音鼓': 'Percussion',
+    '鼓': 'Percussion',
+    '三角铁': 'Percussion',
+    '钹': 'Percussion',
+  };
+  if (PERCUSSION_MAP[normalized]) return PERCUSSION_MAP[normalized];
+  const lower = normalized.toLowerCase();
+  for (const [k, v] of Object.entries(PERCUSSION_MAP)) {
+    if (k.toLowerCase() === lower) return v;
+  }
+  
   if (VALID_INSTRUMENTS.includes(normalized)) {
     return normalized;
   }
