@@ -81,7 +81,7 @@ OCR Text: ${text || 'none'}
 Instrument:`;
 
     const geminiResponse = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`,
       {
         method: 'POST',
         headers: {
@@ -134,6 +134,7 @@ Instrument:`;
         instrument,
         confidence: instrument !== 'unknown' ? 0.85 : 0,
         source: 'llm',
+        _debug_raw: geminiData.candidates?.[0]?.content?.parts?.[0]?.text,
       }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
