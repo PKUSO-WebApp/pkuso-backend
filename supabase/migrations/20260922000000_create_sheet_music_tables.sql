@@ -58,15 +58,15 @@ CREATE TABLE sheet_music_analysis_logs (
 -- 枚举类型扩展
 -- ============================================
 
--- 扩展用户角色（如果 profileRole 枚举不存在则创建）
-DO $$ 
+-- 扩展用户角色
+DO $$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'profileRole') THEN
-    CREATE TYPE "profileRole" AS ENUM ('member', 'admin');
-  END IF;
-  
   -- 添加 score_manager 角色（如果不存在）
-  IF NOT EXISTS (SELECT 1 FROM pg_enum WHERE enumtypid = 'profileRole'::regtype AND enumlabel = 'score_manager') THEN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_enum e
+    JOIN pg_type t ON e.enumtypid = t.oid
+    WHERE t.typname = 'profileRole' AND e.enumlabel = 'score_manager'
+  ) THEN
     ALTER TYPE "profileRole" ADD VALUE 'score_manager';
   END IF;
 END $$;
