@@ -76,6 +76,10 @@ Rules:
 2. If you cannot identify, return "unknown"
 3. Do NOT return any explanation or extra text
 
+IMPORTANT NOTES:
+- The BEGINNING of the OCR text (first page, top of the score) is MOST RELEVANT for instrument identification — it typically contains the instrument name, part designation, and composer info
+- Instrument names may appear in various languages (Chinese, Russian, French, Italian, German, Hungarian, etc.)
+
 Filename: ${filename || 'unknown'}
 OCR Text: ${inputText || 'none'}
 
