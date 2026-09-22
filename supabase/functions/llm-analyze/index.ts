@@ -119,66 +119,88 @@ OCR 文本: ${inputText || 'none'}
 
 结果:`;
 
-    const response = await fetch(
-      `https://open.bigmodel.cn/api/paas/v4/chat/completions`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model: 'glm-4.7-flash',
-          messages: [
-            {
-              role: 'user',
-              content: prompt,
-            },
-          ],
-          temperature: 0,
-          max_tokens: 100,
-          response_format: { type: 'json_object' },
-        }),
-      }
-    );
-
-    const data = await response.json();
+    // 带重试的 GLM 调用
+    const maxRetries = 3;
+    let lastError: string | null = null;
     
-    if (data.error) {
-      return new Response(
-        JSON.stringify({ 
-          success: false, 
-          error: data.error.message || 'LLM API error' 
-        }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      const response = await fetch(
+        `https://open.bigmodel.cn/api/paas/v4/chat/completions`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+            model: 'glm-4.7-flash',
+            messages: [
+              {
+                role: 'user',
+                content: prompt,
+              },
+            ],
+            temperature: 0,
+            max_tokens: 100,
+            response_format: { type: 'json_object' },
+          }),
+        }
       );
-    }
 
-    let responseText = data.choices?.[0]?.message?.content?.trim() || '{"instrument": "unknown", "subPart": null}';
-    
-    // 解析 JSON 响应
-    let instrument = 'unknown';
-    let subPart: number | null = null;
-    
-    try {
-      const parsed = JSON.parse(responseText);
-      instrument = normalizeInstrument(parsed.instrument || 'unknown');
-      subPart = parseSubPart(parsed.subPart);
-    } catch {
-      // 如果解析失败，尝试旧格式兼容
-      instrument = normalizeInstrument(responseText);
-      subPart = null;
+      const data = await response.json();
+      
+      if (response.ok && !data.error) {
+        // 成功
+        let responseText = data.choices?.[0]?.message?.content?.trim() || '{"instrument": "unknown", "subPart": null}';
+        
+        // 解析 JSON 响应
+        let instrument = 'unknown';
+        let subPart: number | null = null;
+        
+        try {
+          const parsed = JSON.parse(responseText);
+          instrument = normalizeInstrument(parsed.instrument || 'unknown');
+          subPart = parseSubPart(parsed.subPart);
+        } catch {
+          // 如果解析失败，尝试旧格式兼容
+          instrument = normalizeInstrument(responseText);
+          subPart = null;
+        }
+        
+        return new Response(
+          JSON.stringify({
+            success: true,
+            instrument,
+            subPart,
+            confidence: instrument !== 'unknown' ? 0.85 : 0,
+            source: 'llm',
+          }),
+          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+      
+      // 记录错误
+      lastError = data.error?.message || `HTTP ${response.status}`;
+      
+      // 判断是否可重试：429 (rate limit) 或 5xx (server error)
+      const isRetryable = response.status === 429 || response.status >= 500;
+      
+      if (!isRetryable || attempt === maxRetries) {
+        break;
+      }
+      
+      // 指数退避：1s, 2s, 4s
+      const delayMs = 1000 * Math.pow(2, attempt);
+      await new Promise(resolve => setTimeout(resolve, delayMs));
     }
     
+    // 所有重试均失败
     return new Response(
-      JSON.stringify({
-        success: true,
-        instrument,
-        subPart,
-        confidence: instrument !== 'unknown' ? 0.85 : 0,
-        source: 'llm',
+      JSON.stringify({ 
+        success: false, 
+        error: `LLM API error after ${maxRetries + 1} attempts: ${lastError}` 
       }),
-      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   } catch (error) {
     return new Response(
