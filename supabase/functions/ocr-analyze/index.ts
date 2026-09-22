@@ -8,19 +8,43 @@ const corsHeaders = {
 
 async function extractFirstPage(pdfBase64: string): Promise<string> {
   const pdfBytes = Uint8Array.from(atob(pdfBase64), c => c.charCodeAt(0));
-  const pdfDoc = await PDFDocument.load(pdfBytes);
-  const pageCount = pdfDoc.getPageCount();
+  let pdfDoc: PDFDocument | null = null;
+  let newDoc: PDFDocument | null = null;
   
-  if (pageCount === 0) {
-    throw new Error('PDF has no pages');
+  try {
+    pdfDoc = await PDFDocument.load(pdfBytes);
+    const pageCount = pdfDoc.getPageCount();
+    
+    if (pageCount === 0) {
+      throw new Error('PDF has no pages');
+    }
+    
+    newDoc = await PDFDocument.create();
+    const [firstPage] = await newDoc.copyPages(pdfDoc, [0]);
+    newDoc.addPage(firstPage);
+    
+    const newPdfBytes = await newDoc.save();
+    
+    return btoa(String.fromCharCode(...newPdfBytes));
+  } finally {
+    // Explicit cleanup to help with memory pressure in sequential calls
+    // pdf-lib doesn't have a destroy method, so we clear internal references
+    if (newDoc) {
+      try {
+        // @ts-ignore - accessing private property for cleanup
+        newDoc._pages = [];
+      } catch {}
+    }
+    if (pdfDoc) {
+      try {
+        // @ts-ignore - accessing private property for cleanup
+        pdfDoc._pages = [];
+      } catch {}
+    }
+    // Force garbage collection hint (Deno doesn't have explicit GC, but clearing refs helps)
+    pdfDoc = null;
+    newDoc = null;
   }
-  
-  const newDoc = await PDFDocument.create();
-  const [firstPage] = await newDoc.copyPages(pdfDoc, [0]);
-  newDoc.addPage(firstPage);
-  
-  const newPdfBytes = await newDoc.save();
-  return btoa(String.fromCharCode(...newPdfBytes));
 }
 
 serve(async (req) => {
