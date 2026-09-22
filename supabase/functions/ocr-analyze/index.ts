@@ -28,13 +28,14 @@ serve(async (req) => {
       );
     }
 
-    // 构造正确的 data URI（支持 PDF 和图片）
-    const mime = mime_type || 'image/png';
+    // 构造正确的 data URI（支持 PDF 和图片），必须包含 content type 前缀
+    const mime = mime_type || 'application/pdf';
     const dataUri = `data:${mime};base64,${file_base64}`;
 
     // 调用 OCR.space API
     const formData = new FormData();
     formData.append('base64Image', dataUri);
+    formData.append('filetype', 'PDF'); // 显式指定 PDF 类型
     formData.append('language', language || 'auto');
     formData.append('isOverlayRequired', 'false');
     formData.append('OCREngine', '2'); // Engine 2 对多语言支持更好
