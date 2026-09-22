@@ -11,11 +11,11 @@ serve(async (req) => {
   }
 
   try {
-    const { image_base64, language } = await req.json();
+    const { file_base64, mime_type, language } = await req.json();
 
-    if (!image_base64) {
+    if (!file_base64) {
       return new Response(
-        JSON.stringify({ success: false, error: 'image_base64 is required' }),
+        JSON.stringify({ success: false, error: 'file_base64 is required' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -28,9 +28,13 @@ serve(async (req) => {
       );
     }
 
+    // 构造正确的 data URI（支持 PDF 和图片）
+    const mime = mime_type || 'image/png';
+    const dataUri = `data:${mime};base64,${file_base64}`;
+
     // 调用 OCR.space API
     const formData = new FormData();
-    formData.append('base64Image', `data:image/png;base64,${image_base64}`);
+    formData.append('base64Image', dataUri);
     formData.append('language', language || 'auto');
     formData.append('isOverlayRequired', 'false');
     formData.append('OCREngine', '2'); // Engine 2 对多语言支持更好

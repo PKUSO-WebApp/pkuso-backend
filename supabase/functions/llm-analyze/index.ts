@@ -47,11 +47,12 @@ serve(async (req) => {
   }
 
   try {
-    const { text, filename } = await req.json();
+    const { text, ocr_text, filename } = await req.json();
+    const inputText = text || ocr_text;
 
-    if (!text && !filename) {
+    if (!inputText && !filename) {
       return new Response(
-        JSON.stringify({ success: false, error: 'text or filename is required' }),
+        JSON.stringify({ success: false, error: 'text/ocr_text or filename is required' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -76,7 +77,7 @@ Rules:
 3. Do NOT return any explanation or extra text
 
 Filename: ${filename || 'unknown'}
-OCR Text: ${text || 'none'}
+OCR Text: ${inputText || 'none'}
 
 Instrument:`;
 
