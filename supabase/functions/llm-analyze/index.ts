@@ -76,25 +76,25 @@ serve(async (req) => {
   }
 
   try {
-    const { text, ocr_text, filename } = await req.json();
+    const { text, ocr_text } = await req.json();
     const inputText = text || ocr_text;
 
-    if (!inputText && !filename) {
+    if (!inputText) {
       return new Response(
-        JSON.stringify({ success: false, error: 'text/ocr_text or filename is required' }),
+        JSON.stringify({ success: false, error: 'text/ocr_text is required' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    const apiKey = Deno.env.get('GLM_API_KEY');
+    const apiKey = Deno.env.get('DEEPSEEK_API_KEY');
     if (!apiKey) {
       return new Response(
-        JSON.stringify({ success: false, error: 'GLM_API_KEY not configured' }),
+        JSON.stringify({ success: false, error: 'DEEPSEEK_API_KEY not configured' }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    const prompt = `你是乐谱分析器。根据文件名和 OCR 文本，识别该乐谱的基础乐器和分声部号。
+    const prompt = `你是乐谱分析器。根据 OCR 文本，识别该乐谱的基础乐器和分声部号。
 
 可用基础乐器（必须从中精确选择一个）：
 Violin, Viola, Cello, Contrabass, Flute, Piccolo, Oboe, Clarinet, Bassoon, Contrabassoon, Horn, Trumpet, Trombone, Tuba, Percussion, Timpani, Drums, Triangle, Cymbals, Piano, Celesta, Harp, Guitar
@@ -114,18 +114,17 @@ Violin, Viola, Cello, Contrabass, Flute, Piccolo, Oboe, Clarinet, Bassoon, Contr
 - 分声部号无上限（可能是 7、8 等） —— 不要假设最大值
 - 乐器名可能以多种语言出现（中文、俄文、法文、意大利文、德文、匈牙利文等）
 
-文件名: ${filename || 'unknown'}
 OCR 文本: ${inputText || 'none'}
 
 结果:`;
 
-    // 带重试的 GLM 调用
+    // 带重试的 DeepSeek 调用
     const maxRetries = 3;
     let lastError: string | null = null;
     
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       const response = await fetch(
-        `https://open.bigmodel.cn/api/paas/v4/chat/completions`,
+        `https://api.deepseek.com/v1/chat/completions`,
         {
           method: 'POST',
           headers: {
@@ -133,7 +132,7 @@ OCR 文本: ${inputText || 'none'}
             'Authorization': `Bearer ${apiKey}`,
           },
           body: JSON.stringify({
-            model: 'glm-4.7-flash',
+            model: 'deepseek-chat',  // V4.1 Flash
             messages: [
               {
                 role: 'user',
