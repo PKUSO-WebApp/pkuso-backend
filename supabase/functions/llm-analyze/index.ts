@@ -106,10 +106,6 @@ Instrument:`;
 
     const geminiData = await geminiResponse.json();
     
-    // 调试日志
-    console.log('Gemini API response status:', geminiResponse.status);
-    console.log('Gemini API response:', JSON.stringify(geminiData));
-    
     if (geminiData.error) {
       return new Response(
         JSON.stringify({ 
@@ -122,14 +118,8 @@ Instrument:`;
 
     let instrument = geminiData.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || 'unknown';
     
-    // 调试日志
-    console.log('Gemini raw response:', JSON.stringify(geminiData));
-    console.log('Extracted instrument:', instrument);
-    
     // 验证输出是否为合法乐器
     instrument = normalizeInstrument(instrument);
-    
-    console.log('Normalized instrument:', instrument);
     
     return new Response(
       JSON.stringify({
@@ -137,8 +127,6 @@ Instrument:`;
         instrument,
         confidence: instrument !== 'unknown' ? 0.85 : 0,
         source: 'llm',
-        _debug_raw: geminiData.candidates?.[0]?.content?.parts?.[0]?.text,
-        _debug_full: geminiData,
       }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
