@@ -65,21 +65,20 @@ serve(async (req) => {
     }
 
     // 调用 Gemini API
-    const prompt = `你是一个乐谱分析助手。根据文件名和OCR提取的文本，识别这是什么乐器的乐谱。
+    const prompt = `You are a music score analyzer. Based on the filename and OCR text, identify the instrument for this sheet music.
 
-可用的乐器列表：
-${VALID_INSTRUMENTS.join(', ')}
+Available instruments (choose EXACTLY one):
+Violin I, Violin II, Viola, Cello, Contrabass, Flute, Piccolo, Oboe, Clarinet, Bassoon, Contrabassoon, Horn, Trumpet, Trombone, Tuba, Percussion, Timpani, Drums, Triangle, Cymbals, Piano, Celesta, Harp, Guitar
 
-规则：
-1. 必须从上述列表中选择一个返回
-2. 如果无法识别，返回 'unknown'
-3. 只返回乐器名称，不要返回其他内容
+Rules:
+1. Return EXACTLY ONE instrument name from the list above
+2. If you cannot identify, return "unknown"
+3. Do NOT return any explanation or extra text
 
-文件名：${filename || '未知'}
+Filename: ${filename || 'unknown'}
+OCR Text: ${text || 'none'}
 
-OCR提取的文本：${text || '无'}
-
-请识别这是什么乐器的乐谱。`;
+Instrument:`;
 
     const geminiResponse = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`,
@@ -116,8 +115,14 @@ OCR提取的文本：${text || '无'}
 
     let instrument = geminiData.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || 'unknown';
     
+    // 调试日志
+    console.log('Gemini raw response:', JSON.stringify(geminiData));
+    console.log('Extracted instrument:', instrument);
+    
     // 验证输出是否为合法乐器
     instrument = normalizeInstrument(instrument);
+    
+    console.log('Normalized instrument:', instrument);
     
     return new Response(
       JSON.stringify({
