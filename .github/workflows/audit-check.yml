@@ -11,6 +11,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Check audit completeness
         run: |
@@ -18,7 +20,7 @@ jobs:
           CHANGED_FILES=$(git diff --name-only --diff-filter=AM origin/${{ github.base_ref }}...HEAD)
 
           MIGRATION_CHANGES=$(echo "$CHANGED_FILES" | grep -c "^supabase/migrations/" || true)
-          FUNCTION_CHANGES=$(echo "$CHANGED_FILES" | grep -c "^functions/" || true)
+          FUNCTION_CHANGES=$(echo "$CHANGED_FILES" | grep -c "^supabase/functions/" || true)
 
           if [ "$MIGRATION_CHANGES" -gt 0 ] || [ "$FUNCTION_CHANGES" -gt 0 ]; then
             echo "Backend changes detected:"
