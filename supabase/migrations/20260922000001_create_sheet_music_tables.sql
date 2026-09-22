@@ -55,23 +55,6 @@ CREATE TABLE sheet_music_analysis_logs (
 );
 
 -- ============================================
--- 枚举类型扩展
--- ============================================
-
--- 扩展用户角色
-DO $$
-BEGIN
-  -- 添加 score_manager 角色（如果不存在）
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_enum e
-    JOIN pg_type t ON e.enumtypid = t.oid
-    WHERE t.typname = 'profileRole' AND e.enumlabel = 'score_manager'
-  ) THEN
-    ALTER TYPE "profileRole" ADD VALUE 'score_manager';
-  END IF;
-END $$;
-
--- ============================================
 -- RLS 策略
 -- ============================================
 
