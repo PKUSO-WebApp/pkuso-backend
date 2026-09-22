@@ -86,76 +86,75 @@ serve(async (req) => {
       );
     }
 
-    const apiKey = Deno.env.get('GEMINI_API_KEY');
+    const apiKey = Deno.env.get('GLM_API_KEY');
     if (!apiKey) {
       return new Response(
-        JSON.stringify({ success: false, error: 'GEMINI_API_KEY not configured' }),
+        JSON.stringify({ success: false, error: 'GLM_API_KEY not configured' }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    const prompt = `You are a music score analyzer. Based on the filename and OCR text, identify the instrument and sub-part number for this sheet music.
+    const prompt = `你是乐谱分析器。根据文件名和 OCR 文本，识别该乐谱的基础乐器和分声部号。
 
-Available BASE instruments (choose EXACTLY one):
+可用基础乐器（必须从中精确选择一个）：
 Violin I, Violin II, Viola, Cello, Contrabass, Flute, Piccolo, Oboe, Clarinet, Bassoon, Contrabassoon, Horn, Trumpet, Trombone, Tuba, Percussion, Timpani, Drums, Triangle, Cymbals, Piano, Celesta, Harp, Guitar
 
-Rules:
-1. Return ONLY a JSON object: {"instrument": "BaseInstrumentName", "subPart": number_or_null}
-2. "instrument" MUST be exactly one from the list above
-3. "subPart" is the part number (1, 2, 3, etc.) or null if no sub-part exists
-4. If you cannot identify, return {"instrument": "unknown", "subPart": null}
-5. Do NOT return any explanation or extra text
+规则：
+1. 仅返回一个 JSON 对象：{"instrument": "基础乐器名", "subPart": 数字或 null}
+2. "instrument" 必须完全匹配上述列表中的一个
+3. "subPart" 为分声部号（1, 2, 3...）或 null（无分声部）
+4. 无法识别时返回 {"instrument": "unknown", "subPart": null}
+5. 不要返回任何解释或额外文本
 
-IMPORTANT NOTES:
-- The BEGINNING of the OCR text (first page, top of the score) is MOST RELEVANT — it typically contains the instrument name and part designation
-- Sub-part numbers may appear as: Arabic (1, 2, 3), Roman (I, II, III), Chinese (一, 二, 三)
-- Examples: "Horn I" → instrument: "Horn", subPart: 1; "Trumpet 2" → instrument: "Trumpet", subPart: 2; "Viola" → instrument: "Viola", subPart: null
-- Some instruments have NO sub-part (e.g., Viola, Cello, Piano) — use subPart: null
-- Sub-part numbers have NO upper limit (could be 7, 8, etc.) — do not assume a maximum
-- Instrument names may appear in various languages (Chinese, Russian, French, Italian, German, Hungarian, etc.)
+重要提示：
+- OCR 文本的开头（首页顶部）最相关 —— 通常包含乐器名和声部标记
+- 分声部号可能出现为：阿拉伯数字 (1, 2, 3)、罗马数字 (I, II, III)、中文数字 (一, 二, 三)
+- 示例："Horn I" → instrument: "Horn", subPart: 1；"Trumpet 2" → instrument: "Trumpet", subPart: 2；"Viola" → instrument: "Viola", subPart: null
+- 部分乐器无分声部（如 Viola、Cello、Piano） —— 用 subPart: null
+- 分声部号无上限（可能是 7、8 等） —— 不要假设最大值
+- 乐器名可能以多种语言出现（中文、俄文、法文、意大利文、德文、匈牙利文等）
 
-Filename: ${filename || 'unknown'}
-OCR Text: ${inputText || 'none'}
+文件名: ${filename || 'unknown'}
+OCR 文本: ${inputText || 'none'}
 
-Result:`;
+结果:`;
 
-    const geminiResponse = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`,
+    const glmResponse = await fetch(
+      `https://open.bigmodel.cn/api/paas/v4/chat/completions`,
       {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
-          contents: [{
-            parts: [{
-              text: prompt
-            }]
-          }],
-          generationConfig: {
-            temperature: 0.1,
-            maxOutputTokens: 100,
-            thinkingConfig: {
-              thinkingBudget: 0,
-            }
-          }
-        })
+          model: 'glm-4.7-flash',
+          messages: [
+            {
+              role: 'user',
+              content: prompt,
+            },
+          ],
+          temperature: 0.1,
+          max_tokens: 100,
+          response_format: { type: 'json_object' },
+        }),
       }
     );
 
-    const geminiData = await geminiResponse.json();
+    const glmData = await glmResponse.json();
     
-    if (geminiData.error) {
+    if (glmData.error) {
       return new Response(
         JSON.stringify({ 
           success: false, 
-          error: geminiData.error.message || 'Gemini API error' 
+          error: glmData.error.message || 'GLM API error' 
         }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    let responseText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '{"instrument": "unknown", "subPart": null}';
+    let responseText = glmData.choices?.[0]?.message?.content?.trim() || '{"instrument": "unknown", "subPart": null}';
     
     // 解析 JSON 响应
     let instrument = 'unknown';
