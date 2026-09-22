@@ -135,6 +135,7 @@ Instrument:`;
         confidence: instrument !== 'unknown' ? 0.85 : 0,
         source: 'llm',
         _debug_raw: geminiData.candidates?.[0]?.content?.parts?.[0]?.text,
+        _debug_full: geminiData,
       }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
