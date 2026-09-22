@@ -103,6 +103,10 @@ Instrument:`;
 
     const geminiData = await geminiResponse.json();
     
+    // 调试日志
+    console.log('Gemini API response status:', geminiResponse.status);
+    console.log('Gemini API response:', JSON.stringify(geminiData));
+    
     if (geminiData.error) {
       return new Response(
         JSON.stringify({ 
