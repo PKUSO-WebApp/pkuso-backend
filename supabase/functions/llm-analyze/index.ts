@@ -7,7 +7,7 @@ const corsHeaders = {
 
 // 基础乐器枚举（不含分声部）
 const VALID_INSTRUMENTS = [
-  'Violin I', 'Violin II', 'Viola', 'Cello', 'Contrabass',
+  'Violin', 'Viola', 'Cello', 'Contrabass',
   'Flute', 'Piccolo', 'Oboe', 'Clarinet', 'Bassoon', 'Contrabassoon',
   'Horn', 'Trumpet', 'Trombone', 'Tuba',
   'Percussion', 'Timpani', 'Drums', 'Triangle', 'Cymbals',
@@ -97,7 +97,7 @@ serve(async (req) => {
     const prompt = `你是乐谱分析器。根据文件名和 OCR 文本，识别该乐谱的基础乐器和分声部号。
 
 可用基础乐器（必须从中精确选择一个）：
-Violin I, Violin II, Viola, Cello, Contrabass, Flute, Piccolo, Oboe, Clarinet, Bassoon, Contrabassoon, Horn, Trumpet, Trombone, Tuba, Percussion, Timpani, Drums, Triangle, Cymbals, Piano, Celesta, Harp, Guitar
+Violin, Viola, Cello, Contrabass, Flute, Piccolo, Oboe, Clarinet, Bassoon, Contrabassoon, Horn, Trumpet, Trombone, Tuba, Percussion, Timpani, Drums, Triangle, Cymbals, Piano, Celesta, Harp, Guitar
 
 规则：
 1. 仅返回一个 JSON 对象：{"instrument": "基础乐器名", "subPart": 数字或 null}
@@ -109,7 +109,7 @@ Violin I, Violin II, Viola, Cello, Contrabass, Flute, Piccolo, Oboe, Clarinet, B
 重要提示：
 - OCR 文本的开头（首页顶部）最相关 —— 通常包含乐器名和声部标记
 - 分声部号可能出现为：阿拉伯数字 (1, 2, 3)、罗马数字 (I, II, III)、中文数字 (一, 二, 三)
-- 示例："Horn I" → instrument: "Horn", subPart: 1；"Trumpet 2" → instrument: "Trumpet", subPart: 2；"Viola" → instrument: "Viola", subPart: null
+- 示例："Horn I" → instrument: "Horn", subPart: 1；"Trumpet 2" → instrument: "Trumpet", subPart: 2；"Violin I" → instrument: "Violin", subPart: 1；"Viola" → instrument: "Viola", subPart: null
 - 部分乐器无分声部（如 Viola、Cello、Piano） —— 用 subPart: null
 - 分声部号无上限（可能是 7、8 等） —— 不要假设最大值
 - 乐器名可能以多种语言出现（中文、俄文、法文、意大利文、德文、匈牙利文等）
@@ -119,7 +119,7 @@ OCR 文本: ${inputText || 'none'}
 
 结果:`;
 
-    const glmResponse = await fetch(
+    const response = await fetch(
       `https://open.bigmodel.cn/api/paas/v4/chat/completions`,
       {
         method: 'POST',
@@ -135,26 +135,26 @@ OCR 文本: ${inputText || 'none'}
               content: prompt,
             },
           ],
-          temperature: 0.1,
+          temperature: 0,
           max_tokens: 100,
           response_format: { type: 'json_object' },
         }),
       }
     );
 
-    const glmData = await glmResponse.json();
+    const data = await response.json();
     
-    if (glmData.error) {
+    if (data.error) {
       return new Response(
         JSON.stringify({ 
           success: false, 
-          error: glmData.error.message || 'GLM API error' 
+          error: data.error.message || 'LLM API error' 
         }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    let responseText = glmData.choices?.[0]?.message?.content?.trim() || '{"instrument": "unknown", "subPart": null}';
+    let responseText = data.choices?.[0]?.message?.content?.trim() || '{"instrument": "unknown", "subPart": null}';
     
     // 解析 JSON 响应
     let instrument = 'unknown';
