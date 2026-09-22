@@ -28,13 +28,13 @@ serve(async (req) => {
       );
     }
 
-    // 直接使用已提取的首页 base64（由前端预处理）
-    const mime = mime_type || 'application/pdf';
+    // Accept both PDF and image from frontend
+    const mime = mime_type || 'image/png';
     const dataUri = `data:${mime};base64,${file_base64}`;
 
     const formData = new FormData();
     formData.append('base64Image', dataUri);
-    formData.append('filetype', 'PDF');
+    formData.append('filetype', mime.startsWith('image/') ? 'JPG' : 'PDF');
     formData.append('language', language || 'auto');
     formData.append('isOverlayRequired', 'false');
     formData.append('OCREngine', '2');
