@@ -9,7 +9,7 @@
 
 初始化 `pkuso-backend` 仓库，从以下来源迁移文件：
 
-1. 从 `pkuso-web-v2/supabase/migrations/` 复制 69 个 migration 文件
+1. 从 `pkuso-web/supabase/migrations/` 复制 69 个 migration 文件
 2. 从 `pkuso-miniprogram/supabase/functions/` 复制 6 个 Edge Function
 
 ## 目的
