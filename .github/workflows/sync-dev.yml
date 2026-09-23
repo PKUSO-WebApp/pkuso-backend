@@ -36,6 +36,19 @@ jobs:
       - name: Apply migrations to dev
         run: supabase db push
 
+      # `supabase functions deploy` 会在本地用 Docker 拉 `ghcr.io/supabase/edge-runtime`。
+      # 匿名拉取按**出口 IP** 限流（GitHub 托管 runner 是共享 IP），实测会以
+      # `toomanyrequests ... allowed: 44000/minute` 稳定失败 —— 部署整条链路就断在这一步。
+      # 登录 ghcr.io 后拉取按账号计数，限额高得多。用 GITHUB_TOKEN（public 包只需读）。
+      # `continue-on-error`：登录失败就退回匿名拉取（等于今天的行为），不因此挡住部署。
+      - name: Login to GHCR
+        continue-on-error: true
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Deploy edge functions to dev
         id: deploy-functions
         run: |
