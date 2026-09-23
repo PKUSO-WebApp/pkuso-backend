@@ -1,0 +1,117 @@
+import { shapeOcrResponse } from "./shape.ts";
+
+/*
+ * handler 单独成模块，index.ts 只负责把它交给 serve()。
+ *
+ * 理由与 llm-analyze 相同：顶层 `serve()` 会真的绑端口，一被测试 import 就炸；
+ * 而**响应组装**（展开顺序、engine/overlay 回显、参数判据）恰恰是最容易出错、
+ * 又最没有别的东西能拦住的部分 —— 它必须能被 import 才测得到。
+ * 拆分本身零行为变化：部署路径仍是 `ocr-analyze/index.ts`。
+ */
+
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+};
+
+/**
+ * OCR.space 支持的引擎号。默认 2 —— 与上一版硬编码的值一致，调用方不传就什么都不变。
+ * 暴露出来是因为引擎选择是**每次调用**的质量旋钮：1 对干净排版的文档有时比 2 准，
+ * 而「哪张图用哪个引擎」只有调用方知道（拼图条带 vs 整页的取舍就不一样）。
+ */
+const ENGINES = new Set([1, 2, 3, 5]);
+
+export async function handler(req: Request): Promise<Response> {
+  if (req.method === 'OPTIONS') {
+    return new Response(null, { status: 204, headers: corsHeaders });
+  }
+
+  try {
+    const { file_base64, mime_type, language, overlay, engine } = await req.json();
+
+    if (!file_base64) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'file_base64 is required' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const apiKey = Deno.env.get('OCR_SPACE_API_KEY');
+    if (!apiKey) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'OCR_SPACE_API_KEY not configured' }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Accept both PDF and image from frontend
+    const mime = mime_type || 'image/png';
+    const dataUri = `data:${mime};base64,${file_base64}`;
+
+    // 只有显式 `overlay === true` 才要坐标：它会让响应大一圈（每个词一个框），
+    // 而绝大多数调用方（只看整段文本的那些）不必为此付带宽。
+    // 判据用严格 `=== true` 而不是真值判断 —— `"false"` 这种字符串在真值判断下是**真**，
+    // 会让「不想要坐标」的调用方反而拿到一个大响应。
+    const wantOverlay = overlay === true;
+    // 非法引擎号**退回默认**而不是报错：这是质量旋钮，不是正确性输入，
+    // 为一个拼错的参数让整次 OCR 失败不值得。
+    // ⚠️ 判据**不要改成 `Number(engine)`**：那会把 `engine: true` 折成 1、`"1"` 折成 1，
+    // 于是一个「不像引擎号」的输入反而静默选中了某个引擎。要与 overlay 一样从严。
+    const engineNo = typeof engine === 'number' && ENGINES.has(engine) ? engine : 2;
+
+    const formData = new FormData();
+    formData.append('base64Image', dataUri);
+    formData.append('filetype', mime.startsWith('image/') ? 'JPG' : 'PDF');
+    formData.append('language', language || 'auto');
+    formData.append('isOverlayRequired', wantOverlay ? 'true' : 'false');
+    formData.append('OCREngine', String(engineNo));
+
+    const ocrResponse = await fetch('https://api.ocr.space/parse/image', {
+      method: 'POST',
+      headers: { 'apikey': apiKey },
+      body: formData,
+    });
+
+    const ocrData = await ocrResponse.json();
+
+    if (ocrData.IsErroredOnProcessing) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: ocrData.ErrorMessage?.[0] || 'OCR processing failed'
+        }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // text / pageCount / pages 都来自这里；`text` 仍是第一页的文本，老调用方一字不变
+    const shaped = shapeOcrResponse(ocrData, wantOverlay);
+
+    return new Response(
+      JSON.stringify({
+        // 展开放**前面**：`shaped` 将来若多出一个叫 success/language/overlay/engine 的字段，
+        // 显式的这几个必须赢。反过来的话重复键会被静默覆盖 —— 而本仓三条链路都不做类型检查
+        //（deno test 只检查被 import 的模块、部署走 esbuild 打包、CI 里没有 check 步骤），
+        // 覆盖了也没人会发现。现在有 index.test.ts 盯着这一条了。
+        ...shaped,
+        success: true,
+        language: language || 'auto',
+        // 请求侧回显：它答的是「这一次到底有没有要坐标」。判据是严格 `=== true`，
+        // 所以 `overlay: "true"`（字符串，最可能的误用形式）会被判成**不要** ——
+        // 不回显就无从发现。上游到底给没给是**另一件事**，看 `pages[].upstreamHasOverlay`。
+        overlay: wantOverlay,
+        // 同理：非法引擎号会静默回落 2，不回显调用方就分不清拿到的是哪个引擎的结果。
+        engine: engineNo,
+      }),
+      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    );
+  } catch (error) {
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      }),
+      { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    );
+  }
+}
