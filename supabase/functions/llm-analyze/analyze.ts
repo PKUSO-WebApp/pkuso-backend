@@ -62,6 +62,10 @@ const VALID_SECTIONS: readonly string[] = [...SECTIONS, OTHER_SECTION];
  * 留着它是因为序号让分谱文件名自解释（`小提琴_1.pdf` 好过 `小提琴.pdf`），
  * 且**删它会牵动 `ambiguous-violin` 那道弃权**（那条守的正是「小提琴分不出序号」，
  * 而它原本要防的静默覆盖已经不成立）。那是一次独立的取舍，不塞进本次改动里。
+ *
+ * ⚠️ **它的优先级也变了**：现在是「模型给了合法号就采信模型，这里只在模型一个号都没给时兜底」，
+ * **不再覆盖模型输出**。覆盖会把信息压掉 —— `Violin_1,_2.pdf` 会被压成 `[1]`，
+ * 详见 buildAnalysis 里那段注释。
  */
 const VIOLIN_SUB_PART: Record<string, number> = {
   第一小提琴: 1,
@@ -211,6 +215,16 @@ export interface Analysis {
   evidence: string;
   /** LLM 给的 section 落在闭集之外时，带上原值供排查 */
   sectionRaw?: string;
+  /**
+   * 模型**给了**分声部号、但我们一个都没解析出来时，带上原文（截断到 60 字）。
+   *
+   * 它把「本来就没有分声部」与「给了但没读懂」区分开 —— 前者用户什么都不用做，
+   * 后者**需要用户手填**，而两者的 `subParts` 都是空数组。没有这个字段，界面会显示
+   * 「已识别 → 圆号 / F调圆号」，用户既不会去填、也不知道要填，号就这么静默丢了。
+   *
+   * 与 `sectionRaw` 是同一个用途（把静默差异变成可见信号），命名也照它。
+   */
+  subPartsRaw?: string;
   /** 弃权原因，仅在 instrument 为空串时出现 */
   abstainReason?: string;
 }
@@ -256,8 +270,12 @@ const MAX_SUB_PARTS = 32;
 /**
  * 分声部号。**唯一合法格式是英文逗号分隔的阿拉伯数字**：`1` / `1,2` / `1,2,3`。
  *
- * 归一化只收敛「同一个符号的不同写法」：NFKC 折全角（`２`→`2`），全角逗号「，」
- * 与顿号「、」折半角，去空白。这是**编码收敛，不是猜测**。
+ * 归一化只收敛「同一个符号的不同写法」，不做语义猜测：
+ * - NFKC 折叠 —— 注意它折出来的范围**比"全角"宽**：`２`（全角）、`①`（带圈数字，
+ *   有 `<circle> 0031` 兼容分解）、`²`（上标）、`𝟏`（数学字母）都会变成 `1`；
+ *   而 `⑵`（折成 `(2)`）、`½`、`Ⅰ`（罗马数字 U+2160）折不出合法 token，一律弃权。
+ *   这是 NFKC 的既定行为、不是这里加的特例（旧版单值实现同理），但契约文字得说实话。
+ * - 全角逗号「，」与顿号「、」折半角；去空白 —— 中文语境下这两种写法太常见。
  *
  * 其余一律**弃权（返回空数组）**：
  * - `1-3` 这类区间：是 1,2,3 还是「第 1 和第 3」？替模型决定语义就是猜。
@@ -266,12 +284,15 @@ const MAX_SUB_PARTS = 32;
  *   `1,2,3支` 若丢掉 `3支` 得到 `[1,2]`，那是个**看起来对**的错答案，会一路写进文件名；
  *   而弃权只是让用户手填一次。与 `evidenceSupports` 是同一条哲学。
  *
- * 返回升序去重的数组。空数组 = 没有分声部，**或**没解析出来 —— 两者对调用方等价。
+ * 返回升序去重的数组。
+ *
+ * ⚠️ 空数组有两个来源：**「本来就没有分声部」与「给了但没解析出来」**。二者对调用方
+ * **不等价**（后者需要用户手填）—— 所以调用方不能只看这个返回值，见 `Analysis.subPartsRaw`。
+ * 本函数只管解析，不做区分。
  */
 export function parseSubParts(raw: unknown): number[] {
   // 标量写成数组、数组写成标量，JSON 里两种都会发生，都接
   const parts = Array.isArray(raw) ? raw : [raw];
-  if (parts.length > MAX_SUB_PARTS) return [];
 
   const out = new Set<number>();
   for (const part of parts) {
@@ -297,12 +318,38 @@ export function parseSubParts(raw: unknown): number[] {
       out.add(num);
     }
   }
-  // ⚠️ 个数上界要在**解析之后**再判一次：上面那次只挡数组形态，而
-  // `"1,2,…,33"` 是**一个字符串**（`parts.length` 恒为 1），从那里过不去。
-  // （这个洞是我自己的用例抓出来的 —— 先写了「33 个应弃权」才发现实现挡不住。）
+  // 个数上界用**去重后**的个数判：上界防的是「号进 file_name 把文件名撑爆」，
+  // 那看的就是最后落进文件名的个数。
+  //
+  // ⚠️ 刻意**不**在解析前按 `parts.length` 预检 —— 那会让判据变成**形态相关**的：
+  // `Array(33).fill(1)` 与 `"1,1,…（33 个）"` 语义完全相同，前者弃权而后者放行。
+  // （这个不一致是对抗测试用变异验证逼出来的：删掉那句预检，提交的用例**一条都不红** ——
+  //   因为那条「33 个应弃权」用的是字符串，数组形态从没被测过。）
   if (out.size > MAX_SUB_PARTS) return [];
 
   return [...out].sort((a, b) => a - b);
+}
+
+/**
+ * 模型**确实给了点什么**（而不是在表达「没有分声部」）。
+ *
+ * `"null"` 是模型表达「无」的常见写法，与空串、空数组一样算「没给」—— 否则每次
+ * 正常返回都会挂上一条「没解析出来」的告警，那条告警立刻失去意义。
+ */
+function providedSubParts(raw: unknown): boolean {
+  if (typeof raw === "number") return true;
+  if (Array.isArray(raw)) return raw.length > 0;
+  if (typeof raw === "string") {
+    const s = raw.trim();
+    return s !== "" && s.toLowerCase() !== "null";
+  }
+  return false;
+}
+
+/** 把「没解析出来的原文」压成一句短的，供界面提示用户手填。太长会把响应撑大且没人看 */
+function describeRaw(raw: unknown): string {
+  const s = typeof raw === "string" ? raw.trim() : (JSON.stringify(raw) ?? String(raw));
+  return s.length > 60 ? `${s.slice(0, 60)}…` : s;
 }
 
 /**
@@ -362,7 +409,30 @@ export function buildAnalysis(parsed: unknown, source: unknown): Analysis {
   if (!evidenceSupports(evidence, source)) return abstain("evidence-not-in-source", sectionRaw);
 
   const violinSubPart = VIOLIN_SUB_PART[section];
-  const subParts = violinSubPart !== undefined ? [violinSubPart] : parseSubParts(record.subParts);
+  const parsedSubParts = parseSubParts(record.subParts);
+  // **有合法号就采信模型**，只在它一个号都没给出时才回退到按声部推导。
+  //
+  // 数组化之前这里的优先级是反的（声部推导**覆盖**模型输出），当时那是对的：旧前端的
+  // 存储路径里带乐器名，两支小提琴缺号就会撞成同一条路径。但存储键早已是
+  // `{scoreId}/{行 id}.pdf`，而反过来覆盖会**把信息压掉** —— 一份 `Violin_1,_2.pdf`
+  // （IMSLP 真实存在，与 `Horn_1,_2,_3,_4.pdf` 完全同类）模型给 `[1,2]`，被压成 `[1]`：
+  // 那正是本 issue 要消灭的那类错（把「含 1、2」记成「只有 1」），
+  // 而且比模型犯错更隐蔽 —— 用户永远看不到模型本来给了什么。
+  //
+  // 冲突情形（section 是「第二小提琴」、模型却给 [1]）同样采信模型的号：两个值出自
+  // **同一次**模型输出，谁对谁错这里没有依据判；而默默改成 2 等于把「模型读到了 1」
+  // 这个观测抹掉。界面两个字段都显示，用户一眼能看出不自洽。
+  const subParts = parsedSubParts.length > 0
+    ? parsedSubParts
+    : violinSubPart !== undefined
+      ? [violinSubPart]
+      : [];
+
+  // 模型给了号、但我们一个都没解析出来 —— 必须让调用方看得见，理由见 subPartsRaw 的注释
+  const subPartsRaw =
+    parsedSubParts.length === 0 && providedSubParts(record.subParts)
+      ? describeRaw(record.subParts)
+      : undefined;
 
   // 兜底 —— 不依赖 prompt 是否被遵守。
   //
@@ -389,5 +459,6 @@ export function buildAnalysis(parsed: unknown, source: unknown): Analysis {
     subParts,
     evidence,
     ...(sectionRaw ? { sectionRaw } : {}),
+    ...(subPartsRaw ? { subPartsRaw } : {}),
   };
 }

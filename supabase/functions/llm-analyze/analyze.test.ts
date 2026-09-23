@@ -245,19 +245,40 @@ Deno.test("乐器名含路径穿越/控制字符时弃权（旧前端拿它当�
   eq(ok.instrument, "木琴/钟琴", "合称应放行");
 });
 
-Deno.test("小提琴：分声部号由声部推导成 1/2，且完全不看模型给什么", () => {
-  // 序号由声部名推出，与模型的输出无关 —— 所以下面这些五花八门的输入
-  // （合法的、非法的、甚至不是分声部号的写法）**结果都一样**。
+Deno.test("小提琴：模型给不出号时，序号由声部推导兜底", () => {
+  // 兜底路径：模型给 []，或给了非法写法（罗马/中文数字 → 解析成 []）。
   // ⚠️ 这条兜底今天是「文件名自解释」的优化，不再是承重结构：
   // 存储键早已是 {scoreId}/{行 id}.pdf（uuid），文件名怎么算都撞不上。
   for (const [section, want] of [["第一小提琴", [1]], ["第二小提琴", [2]]] as const) {
-    for (const given of [[], [1], [2], [3], "II", "二", "1,2"]) {
+    for (const given of [[], "II", "二"]) {
       const r = buildAnalysis(
         { section, instrument: "小提琴", subParts: given, evidence: "Violino" },
         "Violino",
       );
       eq(r.subParts, want, `${section} + 模型给 ${JSON.stringify(given)}`);
     }
+  }
+});
+
+Deno.test("小提琴：模型给了合法号就**采信模型**，不被声部推导压掉", () => {
+  // 一份 `Violin_1,_2.pdf`（IMSLP 真实存在，与 `Horn_1,_2,_3,_4.pdf` 同类）模型给 [1,2]。
+  // 数组化之前这里是「声部推导**覆盖**模型」，会把 [1,2] 压成 [1] —— 正是本 issue 要消灭的
+  // 那类错（把「含 1、2」记成「只有 1」），而且比模型犯错更隐蔽：用户永远看不到模型给了什么。
+  for (const [section, given, want] of [
+    ["第一小提琴", [1, 2], [1, 2]],
+    ["第二小提琴", [1, 2], [1, 2]],
+    ["第一小提琴", [1], [1]],
+    ["第一小提琴", "1,2", [1, 2]],
+    ["第二小提琴", "2,1", [1, 2]],
+    // 冲突情形：section 暗示 2、模型明确给 1 —— 采信明确给的那个。
+    // 两个值出自同一次输出，这里没有依据判谁对；而改成 [2] 会把「模型读到了 1」抹掉。
+    ["第二小提琴", [1], [1]],
+  ] as const) {
+    const r = buildAnalysis(
+      { section, instrument: "小提琴", subParts: given, evidence: "Violino" },
+      "Violino",
+    );
+    eq(r.subParts, want, `${section} + 模型给 ${JSON.stringify(given)}`);
   }
 });
 
@@ -415,12 +436,35 @@ Deno.test("parseSubParts：空与非法输入一律弃权", () => {
   eq(parseSubParts([]), [], "空数组");
 });
 
-Deno.test("parseSubParts：个数上界 —— 防的是文件名被撑爆", () => {
-  // 号会进 file_name（`圆号_1,2,3.pdf`），而下载时那个名字要落到用户的文件系统上
-  const atLimit = Array.from({ length: 32 }, (_, i) => i + 1).join(",");
+Deno.test("parseSubParts：个数上界看**去重后**的个数，且与形态无关", () => {
+  // 号会进 file_name（`圆号_1,2,3.pdf`），而下载时那个名字要落到用户的文件系统上，
+  // 所以上界看的是**最终落进文件名的个数**（= 去重后）。
+  const atLimit = Array.from({ length: 32 }, (_, i) => i + 1);
   eq(parseSubParts(atLimit).length, 32, "32 个应放行");
-  const over = Array.from({ length: 33 }, (_, i) => i + 1).join(",");
+  eq(parseSubParts(atLimit.join(",")).length, 32, "字符串形态同样放行");
+  const over = Array.from({ length: 33 }, (_, i) => i + 1);
   eq(parseSubParts(over), [], "33 个超上界");
+  eq(parseSubParts(over.join(",")), [], "字符串形态同样超上界");
+
+  // ⚠️ 判据必须**形态无关**。早先有一句按 `parts.length` 的预检，它只挡数组形态，
+  // 于是 `Array(33).fill(1)` 弃权、而 `"1,1,…(33 个)"` 放行 —— 同一语义两种结论。
+  // 对抗测试用变异验证证明了这条边界当时**零保护**（删掉预检，用例一条都不红），
+  // 因为那条「33 个应弃权」用的是字符串，数组形态从没被测过。
+  const dupArray = Array(33).fill(1);
+  eq(parseSubParts(dupArray), [1], "33 个元素但只有 1 个不同的号 —— 落进文件名的是 1 个");
+  eq(parseSubParts(dupArray.join(",")), [1], "同语义的字符串形态结论必须一致");
+});
+
+Deno.test("parseSubParts：NFKC 收敛的范围比「全角」宽 —— 契约文字要与实现一致", () => {
+  // 带圈数字有 <circle> 0031 兼容分解，上标/数学字母同理，NFKC 都会折成阿拉伯数字。
+  // 这是 NFKC 的既定行为（旧版单值实现同理），不是这里加的特例 —— 但注释得说实话。
+  eq(parseSubParts("①,②"), [1, 2], "带圈数字");
+  eq(parseSubParts("²"), [2], "上标");
+  eq(parseSubParts("𝟏,𝟐"), [1, 2], "数学字母");
+  // 折不出合法 token 的一律弃权
+  eq(parseSubParts("⑵"), [], "带括号数字（折成 `(2)`）");
+  eq(parseSubParts("½"), [], "分数");
+  eq(parseSubParts("Ⅰ,Ⅱ"), [], "罗马数字 U+2160（NFKC 不折它）");
 });
 
 Deno.test("parseSubParts：原型链上的键不是分声部号", () => {
@@ -451,6 +495,28 @@ Deno.test("非法输入不抛异常，一律走弃权", () => {
     eq(r.instrument, "", `parsed=${JSON.stringify(input)}`);
     eq(r.section, "其他", "section");
   }
+});
+
+Deno.test("subPartsRaw：给了号却没解析出来时必须**看得见**；说「没有」时不出现", () => {
+  const run = (subParts: unknown) =>
+    buildAnalysis({ section: "圆号", instrument: "F调圆号", subParts, evidence: "Horn_1-4" }, "Horn_1-4");
+
+  // 给了但没读懂 —— 用户**需要手填**，所以必须带信号
+  for (const given of ["1-4", "[1,2]", "1,2,3支", Array.from({ length: 33 }, (_, i) => i + 1)]) {
+    const r = run(given);
+    eq(typeof r.subPartsRaw, "string", `${JSON.stringify(given)} 应带上原文`);
+    eq(r.instrument, "F调圆号", "乐器名识别对了，不该连坐走弃权");
+  }
+  eq(run("1-4").subPartsRaw, "1-4", "原文要原样带出来，界面才能提示用户填什么");
+
+  // 模型说「没有」的各种写法 —— 不该挂告警：否则每条正常返回都带一条，那条信号立刻失去意义
+  for (const given of [[], "", "null", null, undefined]) {
+    eq(run(given).subPartsRaw, undefined, `${JSON.stringify(given)} 不该带 subPartsRaw`);
+    eq(run(given).subParts, [], `${JSON.stringify(given)} 的号就是空数组`);
+  }
+  // 解析成功时当然也不带
+  eq(run("1,2").subPartsRaw, undefined, "读懂了的字符串不该再挂原文告警");
+  eq(run("1,2").subParts, [1, 2], "逗号串要拆成数组");
 });
 
 Deno.test("不变量：section 恒在闭集内、subParts 恒为**升序去重的正整数**数组、instrument 恒为字符串", () => {
