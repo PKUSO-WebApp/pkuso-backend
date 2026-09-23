@@ -35,6 +35,8 @@ const PAGES = [
 let calls = 0;
 let backoffs: number[] = [];
 let lastAt = 0;
+/** 最近一次上游请求里的 prompt 正文 —— 用来断言 prompt 的判据没被改掉 */
+let lastPrompt = "";
 let respond: (call: number) => Response | Promise<Response> = () =>
   new Response(OK_BODY, { status: 200 });
 
@@ -42,6 +44,13 @@ globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
   const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
   if (!url.includes("api.deepseek.com")) throw new Error(`意外请求: ${url}`);
   calls++;
+  try {
+    const raw = typeof init?.body === "string" ? init.body : "";
+    lastPrompt = (JSON.parse(raw) as { messages?: Array<{ content?: string }> })
+      ?.messages?.[0]?.content ?? "";
+  } catch {
+    lastPrompt = "";
+  }
   const now = Date.now();
   if (lastAt) backoffs.push(now - lastAt);
   lastAt = now;
@@ -58,6 +67,7 @@ const reset = (fn: typeof respond) => {
   calls = 0;
   backoffs = [];
   lastAt = 0;
+  lastPrompt = "";
 };
 
 const post = (body: unknown) =>
@@ -75,6 +85,18 @@ const eq = (actual: unknown, expected: unknown, msg: string) => {
     throw new Error(`${msg}\n  实际: ${a}\n  期望: ${e}`);
   }
 };
+
+Deno.test("prompt 必须写到「边界＝乐器/号发生变化」，而不是「出现了乐器名」", async () => {
+  reset(() => new Response(OK_BODY, { status: 200 }));
+  await post({ pages: PAGES, pageCount: 4 });
+  // ⚠️ 这条规则是实测逼出来的：Breitkopf 那类老版分谱**每页页眉都印着乐器名**
+  //（`Violino I.` 在续页上也有），所以「这页有乐器名」不能当边界 ——
+  // 少了这句，模型会把单声部的谱子每页都判成新开头（实测 Violins_I 11 页切成 9 段）。
+  eq(lastPrompt.includes("发生了变化"), true, "要给出「变化」这个判据");
+  eq(lastPrompt.includes("每一页的页眉"), true, "要点明「页眉每页都有乐器名」这个陷阱");
+  // 自检：确实取到了 prompt 正文，不是因为两边都空而「通过」
+  eq(lastPrompt.length > 300, true, "prompt 正文确实取到了");
+});
 
 Deno.test("正常路径：平铺字段 + 段区间 + 只请求一次", async () => {
   reset(() => new Response(OK_BODY, { status: 200 }));
