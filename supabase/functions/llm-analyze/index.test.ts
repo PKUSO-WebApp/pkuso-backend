@@ -23,7 +23,7 @@ const OK_BODY = JSON.stringify({
       content: JSON.stringify({
         section: "打击乐",
         instrument: "木琴",
-        subPart: null,
+        subParts: [],
         evidence: "Allegretto",
       }),
     },
@@ -87,8 +87,9 @@ Deno.test("正常路径：平铺字段 + 只请求一次", async () => {
   const j = await res.json();
   eq(res.status, 200, "状态码");
   eq(calls, 1, "上游调用次数");
-  // 字段必须平铺在顶层 —— 旧前端读 data.instrument / data.subPart
-  eq([j.success, j.section, j.instrument, j.subPart], [true, "打击乐", "木琴", null], "响应体");
+  // 字段必须平铺在顶层 —— 前端读 data.instrument / data.subParts
+  eq([j.success, j.section, j.instrument], [true, "打击乐", "木琴"], "响应体");
+  eq(j.subParts, [], "没有分声部时是空数组（不再是 null）");
 });
 
 Deno.test("fetch 抛异常也要重试到底（网络故障是最该重试的一类）", async () => {

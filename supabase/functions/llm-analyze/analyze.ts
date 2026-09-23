@@ -55,8 +55,13 @@ const VALID_SECTIONS: readonly string[] = [...SECTIONS, OTHER_SECTION];
  * 后传的会**静默覆盖**先传的，两份分谱丢一份。由 section 反推 1/2 之后，
  * 旧前端算出的是「小提琴_1.pdf」「小提琴_2.pdf」两个不同路径，不再相撞。
  *
- * #283 上线后这条依然成立：路径是 {section}/{乐器名}[_{subPart}].pdf，
- * 声部已经是目录，这里的 subPart 冗余但无害。
+ * ⚠️ **上面这条理由现在已经过时了**（2026-09-23 核）：存储键早已改成
+ * `{scoreId}/{行 id}.pdf`（uuid），文件名怎么算都撞不上，而那个「旧前端」
+ * 也早就不在线上（#286 已部署）。也就是说**这段兜底今天不再是承重结构**。
+ *
+ * 留着它是因为序号让分谱文件名自解释（`小提琴_1.pdf` 好过 `小提琴.pdf`），
+ * 且**删它会牵动 `ambiguous-violin` 那道弃权**（那条守的正是「小提琴分不出序号」，
+ * 而它原本要防的静默覆盖已经不成立）。那是一次独立的取舍，不塞进本次改动里。
  */
 const VIOLIN_SUB_PART: Record<string, number> = {
   第一小提琴: 1,
@@ -65,7 +70,8 @@ const VIOLIN_SUB_PART: Record<string, number> = {
 
 /**
  * 乐器名「看着就是小提琴」。用于 buildAnalysis 末尾那道兜底：
- * 声部名不守词表时，两支小提琴只靠 subPart 才能区分开。
+ * 声部名不守词表时，就再没有别的依据能定出分声部号了（模型的输出不作数，
+ * 序号只由 `VIOLIN_SUB_PART` 按声部推导）—— 两处都没有，宁可弃权让用户手填。
  * 中提琴 / 大提琴 / 低音提琴都不含这些词，不会被误判。
  *
  * 匹配前先过 `normalizeForMatch`，所以全角（`Ｖｉｏｌｉｎ`）、大小写、空格标点
@@ -76,9 +82,11 @@ const VIOLIN_SUB_PART: Record<string, number> = {
  * `violoncelle`，只差一个后缀 —— 不加环视会把**每一份大提琴**都误判成小提琴
  * 而弃权（`Violoncello` 同理）。这与「不敢用 `viol` 是因为会吃掉 `Viola`」是同一类坑。
  *
- * ⚠️ 这是一张**网**，不是分类器 —— 认不出某种外文写法，兜底就会漏（那时两支
- * 小提琴仍可能算出同一条路径）。真正的根治在 #283：前端改成按 `section` 建目录后，
- * 同名不再相撞，这道兜底就可以退休了。
+ * ⚠️ 这是一张**网**，不是分类器 —— 认不出某种外文写法，兜底就会漏。
+ *
+ * ⚠️ 再说一次（同 `VIOLIN_SUB_PART` 那段）：它守的「两支撞成同一条路径」**今天已不可能**
+ * —— 存储键早就是 `{scoreId}/{行 id}.pdf`（uuid），与文件名无关。所以这道网现在是
+ * 双保险而不是承重墙；它真正的作用退化成「分不出序号就别猜」。
  */
 const VIOLIN_LIKE = /小提琴|viol[ií]n|violon(?!c)|скрипка/;
 
@@ -192,7 +200,14 @@ const ILLEGAL_IN_INSTRUMENT = /\.\.|\p{Cc}|\p{Cf}/u;
 export interface Analysis {
   section: string;
   instrument: string;
-  subPart: number | null;
+  /**
+   * 分声部号，**升序去重**。空数组 = 没有分声部，或没解析出来（两者对调用方等价）。
+   *
+   * 从 `subPart: number | null` 换成数组，是因为真实谱子里大量存在「一份文件覆盖
+   * 多个分声部」：`Horn_1,_2,_3,_4.pdf` 是 4 个圆号订成一份，`Oboe_1,_2.pdf` 同理。
+   * 单值表达不了它 —— 模型返 `1` 会存成「圆号 1」（错），返 `"1,2,3,4"` 会整串丢掉。
+   */
+  subParts: number[];
   evidence: string;
   /** LLM 给的 section 落在闭集之外时，带上原值供排查 */
   sectionRaw?: string;
@@ -228,52 +243,66 @@ export function evidenceSupports(evidence: string, source: string): boolean {
   return normalizeForMatch(source).includes(needle);
 }
 
-// 用 Map 而不是对象字面量：`ROMAN["constructor"]` 会取到 Object 原型上的函数，
-// 而下面的 `if (roman)` 是真值判断 —— 那样 subPart 会变成一个函数，
-// 违反「恒为 number|null」。Map.get 对不存在的键一律返回 undefined。
-const ROMAN = new Map<string, number>([
-  ["i", 1], ["ii", 2], ["iii", 3], ["iv", 4], ["v", 5],
-  ["vi", 6], ["vii", 7], ["viii", 8], ["ix", 9], ["x", 10],
-]);
-
-const CHINESE_DIGITS = new Map<string, number>([
-  ["一", 1], ["二", 2], ["三", 3], ["四", 4], ["五", 5],
-  ["六", 6], ["七", 7], ["八", 8], ["九", 9], ["十", 10],
-]);
+/** 分声部号的上界（值本身）。上界用 isSafeInteger —— 400 位数字串 Number() 出来是
+ *  Infinity，它作为 number 流进进程内调用方、却在 JSON 里被序列化成 null，同一次调用两个值。 */
+const isValidSubPart = (n: number): boolean => Number.isSafeInteger(n) && n > 0;
 
 /**
- * 分声部号：支持阿拉伯数字、罗马数字、中文数字。
- * 没有分声部、识别不出、或不是正整数，一律返回 null。
+ * 分声部号的**个数**上界。它不防模型犯错，防的是文件名被撑爆：
+ * 号会进 `file_name`（`圆号_1,2,3.pdf`），而下载时那个名字要落到用户的文件系统上。
  */
-export function parseSubPart(raw: unknown): number | null {
-  // 数字先单独判：不做 String() 强转 —— `String([2])` 是 `"2"`、`String(["ii"])` 是 `"ii"`，
-  // 会把数组当成分声部号放过去。JSON 里模型完全可能把标量写成数组。
-  if (typeof raw === "number") {
-    return Number.isSafeInteger(raw) && raw > 0 ? raw : null;
+const MAX_SUB_PARTS = 32;
+
+/**
+ * 分声部号。**唯一合法格式是英文逗号分隔的阿拉伯数字**：`1` / `1,2` / `1,2,3`。
+ *
+ * 归一化只收敛「同一个符号的不同写法」：NFKC 折全角（`２`→`2`），全角逗号「，」
+ * 与顿号「、」折半角，去空白。这是**编码收敛，不是猜测**。
+ *
+ * 其余一律**弃权（返回空数组）**：
+ * - `1-3` 这类区间：是 1,2,3 还是「第 1 和第 3」？替模型决定语义就是猜。
+ * - 罗马数字 / 中文数字：prompt 已明确要求阿拉伯数字，容忍它们等于同时维护两套解析。
+ * - **只要有一个非空片段不是正整数，整个弃权** —— 部分解析比不解析更危险：
+ *   `1,2,3支` 若丢掉 `3支` 得到 `[1,2]`，那是个**看起来对**的错答案，会一路写进文件名；
+ *   而弃权只是让用户手填一次。与 `evidenceSupports` 是同一条哲学。
+ *
+ * 返回升序去重的数组。空数组 = 没有分声部，**或**没解析出来 —— 两者对调用方等价。
+ */
+export function parseSubParts(raw: unknown): number[] {
+  // 标量写成数组、数组写成标量，JSON 里两种都会发生，都接
+  const parts = Array.isArray(raw) ? raw : [raw];
+  if (parts.length > MAX_SUB_PARTS) return [];
+
+  const out = new Set<number>();
+  for (const part of parts) {
+    if (typeof part === "number") {
+      if (!isValidSubPart(part)) return [];
+      out.add(part);
+      continue;
+    }
+    if (typeof part !== "string") return [];
+    const tokens = part
+      .normalize("NFKC")
+      .replace(/[，、]/g, ",")
+      .split(",")
+      .map((t) => t.trim())
+      // 空片段只来自多打/少打逗号（`1,2,`），是格式噪声不是内容 —— 它不该让整串弃权
+      .filter((t) => t !== "");
+    if (tokens.length === 0) return [];
+    for (const t of tokens) {
+      // 只认纯数字：`parseInt("2 支")` 会得到 2，那种「宽容」会把噪声当成分声部号
+      if (!/^\d+$/.test(t)) return [];
+      const num = Number(t);
+      if (!isValidSubPart(num)) return [];
+      out.add(num);
+    }
   }
-  if (typeof raw !== "string") return null;
+  // ⚠️ 个数上界要在**解析之后**再判一次：上面那次只挡数组形态，而
+  // `"1,2,…,33"` 是**一个字符串**（`parts.length` 恒为 1），从那里过不去。
+  // （这个洞是我自己的用例抓出来的 —— 先写了「33 个应弃权」才发现实现挡不住。）
+  if (out.size > MAX_SUB_PARTS) return [];
 
-  // NFKC：OCR 常出全角数字（`２`），模型也可能回兼容形式的罗马数字（`Ⅱ` U+2161）。
-  // 不折叠的话 `长笛_2` 会退化成 `长笛`，与另一支长笛撞成同一条路径 ——
-  // 与小提琴那条同类的静默覆盖。
-  const str = raw.normalize("NFKC").trim();
-  if (!str || str.toLowerCase() === "null") return null;
-
-  const roman = ROMAN.get(str.toLowerCase());
-  if (roman !== undefined) return roman;
-
-  const chinese = CHINESE_DIGITS.get(str);
-  if (chinese !== undefined) return chinese;
-
-  // 只认纯数字：parseInt("2 支") 会得到 2，那种「宽容」会把噪声当成分声部号。
-  // 上界用 isSafeInteger —— 400 位数字串 parseInt 出来是 Infinity，它作为 number
-  // 流进进程内调用方，却在 JSON 里被序列化成 null，同一次调用两个值。
-  if (/^\d+$/.test(str)) {
-    const num = Number(str);
-    if (Number.isSafeInteger(num) && num > 0) return num;
-  }
-
-  return null;
+  return [...out].sort((a, b) => a - b);
 }
 
 /**
@@ -294,7 +323,7 @@ export function abstain(reason: string, sectionRaw?: string): Analysis {
   return {
     section: OTHER_SECTION,
     instrument: "",
-    subPart: null,
+    subParts: [],
     evidence: "",
     abstainReason: reason,
     ...(sectionRaw ? { sectionRaw } : {}),
@@ -332,7 +361,8 @@ export function buildAnalysis(parsed: unknown, source: unknown): Analysis {
   if (!evidence) return abstain("no-evidence", sectionRaw);
   if (!evidenceSupports(evidence, source)) return abstain("evidence-not-in-source", sectionRaw);
 
-  const subPart = VIOLIN_SUB_PART[section] ?? parseSubPart(record.subPart);
+  const violinSubPart = VIOLIN_SUB_PART[section];
+  const subParts = violinSubPart !== undefined ? [violinSubPart] : parseSubParts(record.subParts);
 
   // 兜底 —— 不依赖 prompt 是否被遵守。
   //
@@ -340,23 +370,23 @@ export function buildAnalysis(parsed: unknown, source: unknown): Analysis {
   // 旧前端会为两份分谱算出同一条存储路径（{scoreId}/小提琴/小提琴.pdf），
   // 而上传是 upsert:true —— 后传的静默覆盖先传的。
   //
-  // 序号从两处取：声部名（VIOLIN_SUB_PART）或模型自己给的 subPart。两处都没有，
+  // 序号从两处取：声部名（VIOLIN_SUB_PART）或模型自己给的 subParts。两处都没有，
   // 就是真的分辨不出来 —— 宁可不识别（让用户手填），也不要覆盖掉一份分谱。
   //
   // ⚠️ 这里**不能**再加 `sectionRaw &&`：`sectionRaw` 只在 section 落闭集外时才出现，
   // 而「其他」是闭集内的合法值、又正是 prompt 规则 3 指定的退路 ——
-  // 加了就把最常见的那条路漏掉了。（第一/第二小提琴的 subPart 由
-  // VIOLIN_SUB_PART 给出 1/2、永不为 null，所以放开这个条件不会误伤它们。）
+  // 加了就把最常见的那条路漏掉了。（第一/第二小提琴的序号由
+  // VIOLIN_SUB_PART 给出 1/2、永不为空，所以放开这个条件不会误伤它们。）
   //
   // 判据只认「乐器名看着就是小提琴」，中提琴/大提琴/低音提琴不含「小提琴」三字。
-  if (subPart === null && VIOLIN_LIKE.test(normalizeForMatch(instrument))) {
+  if (subParts.length === 0 && VIOLIN_LIKE.test(normalizeForMatch(instrument))) {
     return abstain("ambiguous-violin", sectionRaw);
   }
 
   return {
     section,
     instrument,
-    subPart,
+    subParts,
     evidence,
     ...(sectionRaw ? { sectionRaw } : {}),
   };

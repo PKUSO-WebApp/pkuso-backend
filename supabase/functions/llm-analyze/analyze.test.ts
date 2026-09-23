@@ -4,7 +4,7 @@ import {
   evidenceSupports,
   normalizeForMatch,
   normalizeSection,
-  parseSubPart,
+  parseSubParts,
   SECTIONS,
 } from "./analyze.ts";
 
@@ -46,18 +46,18 @@ Deno.test("16 声部与 pkuso-web 的 INSTRUMENT_ORDER 逐字一致", () => {
 
 Deno.test("正常路径：打击乐 / 木琴", () => {
   const r = buildAnalysis(
-    { section: "打击乐", instrument: "木琴", subPart: null, evidence: "Campanelli e Silofono" },
+    { section: "打击乐", instrument: "木琴", subParts: [], evidence: "Campanelli e Silofono" },
     SOURCE,
   );
   eq(r.section, "打击乐", "section");
   eq(r.instrument, "木琴", "instrument");
-  eq(r.subPart, null, "subPart");
+  eq(r.subParts, [], "没有分声部时是空数组");
   eq(r.abstainReason, undefined, "不应弃权");
 });
 
 Deno.test("弃权：乐器名为空串", () => {
   const r = buildAnalysis(
-    { section: "其他", instrument: "", subPart: null, evidence: "" },
+    { section: "其他", instrument: "", subParts: [], evidence: "" },
     SOURCE,
   );
   eq(r.instrument, "", "instrument");
@@ -104,25 +104,25 @@ Deno.test("非答案黑名单不误杀真实乐器名", () => {
     );
     eq(r.instrument, name, `「${name}」被误杀`);
   }
-  // 「小提琴」单独测：它在「其他 + 无 subPart」下**应当**被 ambiguous-violin 兜底
-  // 拦下（那正是两支会撞成同一路径的情形），所以要给一个正常的声部与序号。
+  // 「小提琴」单独测：它在「其他 + 空分声部」下**应当**被 ambiguous-violin 兜底
+  // 拦下（那正是两支会分辨不出来的情形），所以要给一个正常的声部与序号。
   const v = buildAnalysis(
-    { section: "中提琴", instrument: "小提琴", subPart: 1, evidence: "Campanelli e Silofono" },
+    { section: "中提琴", instrument: "小提琴", subParts: [1], evidence: "Campanelli e Silofono" },
     SOURCE,
   );
-  eq(v.instrument, "小提琴", "有声部序号时不该被误杀");
-  eq(v.subPart, 1, "subPart");
+  eq(v.instrument, "小提琴", "有分声部号时不该被误杀");
+  eq(v.subParts, [1], "分声部号");
 });
 
 Deno.test("弃权：没有 evidence", () => {
-  const r = buildAnalysis({ section: "圆号", instrument: "圆号", subPart: 2 }, SOURCE);
+  const r = buildAnalysis({ section: "圆号", instrument: "圆号", subParts: [2] }, SOURCE);
   eq(r.instrument, "", "instrument");
   eq(r.abstainReason, "no-evidence", "原因");
 });
 
 Deno.test("弃权：evidence 不在原文里（模型在编）", () => {
   const r = buildAnalysis(
-    { section: "大管", instrument: "大管", subPart: 1, evidence: "Fagotto I" },
+    { section: "大管", instrument: "大管", subParts: [1], evidence: "Fagotto I" },
     SOURCE,
   );
   eq(r.instrument, "", "instrument");
@@ -203,7 +203,7 @@ Deno.test("section：「其他」是合法值，不该报词表漂移", () => {
 
 Deno.test("section 不在闭集：落「其他」并带原值", () => {
   const r = buildAnalysis(
-    { section: "木管", instrument: "长笛", subPart: 1, evidence: "Flute 1" },
+    { section: "木管", instrument: "长笛", subParts: [1], evidence: "Flute 1" },
     "Flute 1",
   );
   eq(r.section, "其他", "section");
@@ -245,35 +245,35 @@ Deno.test("乐器名含路径穿越/控制字符时弃权（旧前端拿它当�
   eq(ok.instrument, "木琴/钟琴", "合称应放行");
 });
 
-Deno.test("小提琴：subPart 由声部推导成 1/2，且不依赖模型输出", () => {
-  // 承重结构：旧前端（#283 之前）只在 instrument === "Violin" 时才拼声部名，
-  // 新契约不再返回 "Violin"，两支小提琴会算成同一个路径，
-  // 而上传是 upsert —— 后传的会静默覆盖先传的。推导出 1/2 才能错开。
-  for (const [section, want] of [["第一小提琴", 1], ["第二小提琴", 2]] as const) {
-    for (const given of [null, 1, 2, 3, "II", "二"]) {
+Deno.test("小提琴：分声部号由声部推导成 1/2，且完全不看模型给什么", () => {
+  // 序号由声部名推出，与模型的输出无关 —— 所以下面这些五花八门的输入
+  // （合法的、非法的、甚至不是分声部号的写法）**结果都一样**。
+  // ⚠️ 这条兜底今天是「文件名自解释」的优化，不再是承重结构：
+  // 存储键早已是 {scoreId}/{行 id}.pdf（uuid），文件名怎么算都撞不上。
+  for (const [section, want] of [["第一小提琴", [1]], ["第二小提琴", [2]]] as const) {
+    for (const given of [[], [1], [2], [3], "II", "二", "1,2"]) {
       const r = buildAnalysis(
-        { section, instrument: "小提琴", subPart: given, evidence: "Violino" },
+        { section, instrument: "小提琴", subParts: given, evidence: "Violino" },
         "Violino",
       );
-      eq(r.subPart, want, `${section} + 模型给 ${JSON.stringify(given)}`);
+      eq(r.subParts, want, `${section} + 模型给 ${JSON.stringify(given)}`);
     }
   }
 });
 
-Deno.test("小提琴：声部落闭集外且没有 subPart 时宁可弃权，也不能让两支撞成同一路径", () => {
+Deno.test("小提琴：声部落闭集外且没有分声部号时宁可弃权", () => {
   // 这是第二轮审查打出来的洞：`VIOLIN_SUB_PART` 按 section 取值，section 一旦
-  // 不守词表（`Violin I` / `小提琴`）就没有依据了，只能靠模型给的 subPart。
-  // 两支小提琴的 instrument 名相同 —— 序号一缺，旧前端算出的是同一条
-  // {scoreId}/小提琴/小提琴.pdf，upsert 会静默覆盖掉一份分谱。
+  // 不守词表（`Violin I` / `小提琴`）就没有依据了，只能靠模型给的分声部号。
+  // 两支小提琴的 instrument 名相同，序号一缺就分辨不出来 —— 宁可不识别让用户手填。
   // 必须同时覆盖**闭集内**的声部：`sectionRaw` 只在闭集外才出现，而「其他」是
   // 闭集内的合法值、又正是 prompt 规则 3 指定的退路 —— 只测闭集外会把最常见的那条
   // 路漏掉（第三轮对抗就是这样打穿的）。
   for (const rawSection of [
-    "Violin I", "小提琴", "弦乐", "Violini",     // 闭集外
+    "Violin I", "小提琴", "弦乐", "Violini", // 闭集外
     "其他", "中提琴", "大提琴", "打击乐", "键盘", // 闭集内
   ]) {
     const r = buildAnalysis(
-      { section: rawSection, instrument: "小提琴", subPart: null, evidence: "Violino" },
+      { section: rawSection, instrument: "小提琴", subParts: [], evidence: "Violino" },
       "Violino",
     );
     eq(r.instrument, "", `声部「${rawSection}」应弃权`);
@@ -283,7 +283,7 @@ Deno.test("小提琴：声部落闭集外且没有 subPart 时宁可弃权，也
   // 所以全角/大小写/标点都归到同一形式；重音字母 NFKC 不折叠，单独列出。
   for (const name of ["Violin", "Ｖｉｏｌｉｎ", "violín", "VIOLON", "Скрипка", "violino"]) {
     const r = buildAnalysis(
-      { section: "其他", instrument: name, subPart: null, evidence: "Violino" },
+      { section: "其他", instrument: name, subParts: [], evidence: "Violino" },
       "Violino",
     );
     eq(r.instrument, "", `instrument=${name} 也应弃权`);
@@ -292,30 +292,38 @@ Deno.test("小提琴：声部落闭集外且没有 subPart 时宁可弃权，也
   // 反向：这些**不该**被认成小提琴（否则会误伤）
   for (const name of ["中提琴", "大提琴", "低音提琴", "Viola", "Violoncello", "大管"]) {
     const r = buildAnalysis(
-      { section: "弦乐", instrument: name, subPart: null, evidence: "Allegretto" },
+      { section: "弦乐", instrument: name, subParts: [], evidence: "Allegretto" },
       SOURCE,
     );
     eq(r.instrument, name, `「${name}」不该被小提琴兜底误伤`);
   }
 });
 
-Deno.test("小提琴兜底：声部落闭集外但模型给了 subPart 时不弃权（路径能错开）", () => {
-  // prompt 已要求小提琴照给 subPart；给了就不必弃权。
-  for (const [given, want] of [[1, 1], [2, 2], ["II", 2]] as const) {
+Deno.test("小提琴兜底：声部落闭集外但模型给了**合法**分声部号时不弃权", () => {
+  // prompt 已要求小提琴照给分声部号；给了合法的就不必弃权。
+  for (const [given, want] of [[[1], [1]], [[2], [2]], ["1", [1]]] as const) {
     const r = buildAnalysis(
-      { section: "Violin I", instrument: "小提琴", subPart: given, evidence: "Violino" },
+      { section: "Violin I", instrument: "小提琴", subParts: given, evidence: "Violino" },
       "Violino",
     );
-    eq(r.instrument, "小提琴", `subPart=${given} 不该弃权`);
-    eq(r.subPart, want, `subPart=${given}`);
+    eq(r.instrument, "小提琴", `subParts=${JSON.stringify(given)} 不该弃权`);
+    eq(r.subParts, want, `subParts=${JSON.stringify(given)}`);
   }
+  // ⚠️ 契约收紧后**罗马数字不再算数**：这一条以前是放行的（`"II"` → 2），
+  // 现在唯一合法格式是阿拉伯数字，所以它落进「没有分声部号」那一支，应当弃权。
+  const roman = buildAnalysis(
+    { section: "Violin I", instrument: "小提琴", subParts: "II", evidence: "Violino" },
+    "Violino",
+  );
+  eq(roman.instrument, "", "罗马数字不再被接受");
+  eq(roman.abstainReason, "ambiguous-violin", "原因");
 });
 
 Deno.test("小提琴兜底不误伤中提琴/大提琴/低音提琴", () => {
   // 判据是「乐器名里含『小提琴』」—— 这三个都不含，即使声部落闭集外也不该弃权。
   for (const name of ["中提琴", "大提琴", "低音提琴"]) {
     const r = buildAnalysis(
-      { section: "弦乐", instrument: name, subPart: null, evidence: "Allegretto" },
+      { section: "弦乐", instrument: name, subParts: [], evidence: "Allegretto" },
       SOURCE,
     );
     eq(r.instrument, name, `「${name}」被误伤`);
@@ -341,66 +349,90 @@ Deno.test("其他 14 个声部不被小提琴规则误伤", () => {
   const others = SECTIONS.filter((s) => s !== "第一小提琴" && s !== "第二小提琴");
   for (const section of others) {
     const r = buildAnalysis(
-      { section, instrument: "某乐器", subPart: 1, evidence: "Allegretto" },
+      { section, instrument: "某乐器", subParts: [1], evidence: "Allegretto" },
       SOURCE,
     );
     eq(r.section, section, `${section} 的 section 不该被改写`);
-    eq(r.subPart, 1, `${section} 的 subPart 应保留`);
+    eq(r.subParts, [1], `${section} 的分声部号应保留`);
   }
 });
 
-Deno.test("parseSubPart：阿拉伯/罗马/中文/无", () => {
-  eq(parseSubPart(3), 3, "number");
-  eq(parseSubPart("3"), 3, "阿拉伯");
-  eq(parseSubPart("III"), 3, "罗马大写");
-  eq(parseSubPart("iii"), 3, "罗马小写");
-  eq(parseSubPart("三"), 3, "中文");
-  eq(parseSubPart("8"), 8, "无上限");
-  eq(parseSubPart("null"), null, "字面量 null");
-  eq(parseSubPart(""), null, "空串");
-  eq(parseSubPart(null), null, "null");
-  eq(parseSubPart(0), null, "0");
-  eq(parseSubPart(-1), null, "负数");
+Deno.test("parseSubParts：唯一合法格式是英文逗号分隔的阿拉伯数字", () => {
+  eq(parseSubParts(3), [3], "number");
+  eq(parseSubParts("3"), [3], "单个");
+  eq(parseSubParts("1,2"), [1, 2], "两个");
+  eq(parseSubParts("1,2,3,4"), [1, 2, 3, 4], "一份覆盖四个分声部（Horn_1,2,3,4）");
+  eq(parseSubParts("8"), [8], "无上限");
+  eq(parseSubParts([2]), [2], "JSON 数组 —— 模型可能把标量写成数组，两种都接");
+  eq(parseSubParts([2, 1]), [1, 2], "数组也升序");
 });
 
-Deno.test("parseSubPart：原型链上的键不是分声部号", () => {
+Deno.test("parseSubParts：升序去重", () => {
+  eq(parseSubParts("3,1,2"), [1, 2, 3], "乱序");
+  eq(parseSubParts("1,1,2"), [1, 2], "重复");
+  eq(parseSubParts("2,2"), [2], "全重复");
+});
+
+Deno.test("parseSubParts：只收敛**符号写法**，不猜语义", () => {
+  // 下面这些是同一个符号的不同写法 —— 收敛它们是编码归一化，不是猜
+  eq(parseSubParts("２"), [2], "全角数字（NFKC）");
+  eq(parseSubParts("１，２"), [1, 2], "全角逗号");
+  eq(parseSubParts("1、2"), [1, 2], "顿号（中文语境下的常见写法）");
+  eq(parseSubParts(" 1 , 2 "), [1, 2], "空白");
+  eq(parseSubParts("1,2,"), [1, 2], "尾随逗号是格式噪声，不该让整串弃权");
+  // 下面这些**不是写法问题，是语义问题** —— 替模型决定就是猜，一律弃权
+  eq(parseSubParts("1-3"), [], "区间：是 1,2,3 还是「第 1 和第 3」？");
+  eq(parseSubParts("II"), [], "罗马数字");
+  eq(parseSubParts("iii"), [], "罗马小写");
+  eq(parseSubParts("三"), [], "中文数字");
+});
+
+Deno.test("parseSubParts：**任一非空片段非法就整个弃权**，不做部分解析", () => {
+  // 部分解析比不解析更危险：`1,2,3支` 若丢掉 `3支` 会得到 [1,2] ——
+  // 一个**看起来对**的错答案，会一路写进文件名；而弃权只是让用户手填一次。
+  eq(parseSubParts("1,2,3支"), [], "带中文后缀");
+  eq(parseSubParts("1,2,x"), [], "混入非数字");
+  eq(parseSubParts("1.5"), [], "小数");
+  eq(parseSubParts("0x2"), [], "十六进制写法");
+  eq(parseSubParts("+2"), [], "带正号");
+  eq(parseSubParts("2 支"), [], "带后缀");
+});
+
+Deno.test("parseSubParts：空与非法输入一律弃权", () => {
+  eq(parseSubParts(null), [], "null");
+  eq(parseSubParts(undefined), [], "undefined");
+  eq(parseSubParts(""), [], "空串");
+  eq(parseSubParts("null"), [], "字面量 null");
+  eq(parseSubParts(0), [], "0 不是分声部号");
+  eq(parseSubParts(-1), [], "负数");
+  eq(parseSubParts(1.5), [], "非整数 number");
+  eq(parseSubParts(Infinity), [], "Infinity");
+  eq(parseSubParts(NaN), [], "NaN");
+  // 溢出：Number("999…") 是 Infinity，它在进程内是 number、在 JSON 里变成 null
+  eq(parseSubParts("9".repeat(400)), [], "超长数字串");
+  eq(parseSubParts({}), [], "对象");
+  eq(parseSubParts(true), [], "布尔");
+  eq(parseSubParts([]), [], "空数组");
+});
+
+Deno.test("parseSubParts：个数上界 —— 防的是文件名被撑爆", () => {
+  // 号会进 file_name（`圆号_1,2,3.pdf`），而下载时那个名字要落到用户的文件系统上
+  const atLimit = Array.from({ length: 32 }, (_, i) => i + 1).join(",");
+  eq(parseSubParts(atLimit).length, 32, "32 个应放行");
+  const over = Array.from({ length: 33 }, (_, i) => i + 1).join(",");
+  eq(parseSubParts(over), [], "33 个超上界");
+});
+
+Deno.test("parseSubParts：原型链上的键不是分声部号", () => {
   // 「对象字面量 + 不可信字符串索引」的经典坑：ROMAN["constructor"] 取到的是
-  // Object 构造函数，而 `if (roman)` 是真值判断 —— subPart 会变成一个函数，
-  // 违反「恒为 number|null」。改用 Map 之后不存在的键一律 undefined。
+  // Object 构造函数，而真值判断会让它一路流出去。现在改用正则而不是查表，
+  // 这条路已经堵死 —— 但输入仍不可信，留着当回归网。
   for (const key of [
     "constructor", "toString", "valueOf", "hasOwnProperty", "__proto__",
     "isPrototypeOf", "propertyIsEnumerable",
   ]) {
-    eq(parseSubPart(key), null, `「${key}」`);
+    eq(parseSubParts(key), [], `「${key}」`);
   }
-});
-
-Deno.test("parseSubPart：不做 String() 强转（数组不是数字）", () => {
-  // String([2]) === "2"、String(["ii"]) === "ii" —— 强转会把数组当分声部号
-  eq(parseSubPart([2]), null, "数组 [2]");
-  eq(parseSubPart(["2"]), null, "数组 ['2']");
-  eq(parseSubPart(["ii"]), null, "数组 ['ii']");
-  eq(parseSubPart([]), null, "空数组");
-  eq(parseSubPart({}), null, "对象");
-  eq(parseSubPart(true), null, "布尔");
-});
-
-Deno.test("parseSubPart：噪声与溢出不产生假阳性", () => {
-  eq(parseSubPart("2 支"), null, "带后缀");
-  eq(parseSubPart("2支"), null, "带中文后缀");
-  eq(parseSubPart("1.5"), null, "小数");
-  eq(parseSubPart("0x2"), null, "十六进制写法");
-  eq(parseSubPart("+2"), null, "带正号");
-  // 兼容形式（NFKC 折叠）：OCR 常出全角数字，模型也可能回 Ⅱ(U+2161)/⑧。
-  // 不折叠的话 `长笛_2` 会退化成 `长笛`，与另一支长笛撞成同一条路径。
-  eq(parseSubPart("２"), 2, "全角数字");
-  eq(parseSubPart("Ⅱ"), 2, "罗马数字兼容形式 U+2161");
-  eq(parseSubPart("⑧"), 8, "带圈数字");
-  // 溢出：parseInt 会给出 Infinity，它在进程内是 number、在 JSON 里变成 null
-  eq(parseSubPart("9".repeat(400)), null, "超长数字串");
-  eq(parseSubPart(Infinity), null, "Infinity");
-  eq(parseSubPart(NaN), null, "NaN");
-  eq(parseSubPart(1.5), null, "非整数 number");
 });
 
 Deno.test("source 类型不对：走弃权而不是抛异常", () => {
@@ -421,22 +453,32 @@ Deno.test("非法输入不抛异常，一律走弃权", () => {
   }
 });
 
-Deno.test("不变量：section 恒在闭集内、subPart 恒为 number|null、instrument 恒为字符串", () => {
+Deno.test("不变量：section 恒在闭集内、subParts 恒为**升序去重的正整数**数组、instrument 恒为字符串", () => {
   const sections = [...SECTIONS, "其他", "木管", "", 42 as unknown as string];
   for (const section of sections) {
     for (const instrument of ["木琴", "", "unknown", 42]) {
-      for (const subPart of [null, 1, "II", 0, [2], Infinity]) {
-        const r = buildAnalysis({ section, instrument, subPart, evidence: "Allegretto" }, SOURCE);
+      for (const raw of [null, 1, "II", 0, [2], Infinity, "1,2", "3,1", "1,1", "1,2,3支"]) {
+        const r = buildAnalysis({ section, instrument, subParts: raw, evidence: "Allegretto" }, SOURCE);
         if (![...SECTIONS, "其他"].includes(r.section)) {
           throw new Error(`section 越界: ${JSON.stringify(r.section)}`);
         }
-        if (r.subPart !== null && typeof r.subPart !== "number") {
-          throw new Error(`subPart 类型错: ${JSON.stringify(r.subPart)}`);
+        if (!Array.isArray(r.subParts)) {
+          throw new Error(`subParts 不是数组: ${JSON.stringify(r.subParts)}`);
         }
         // 只判 typeof 不够：Infinity / NaN 也是 number，而它们经 JSON 会变成 null，
         // 同一次调用在进程内与线上是两个值。
-        if (r.subPart !== null && !Number.isSafeInteger(r.subPart)) {
-          throw new Error(`subPart 不是安全整数: ${String(r.subPart)}`);
+        for (const n of r.subParts) {
+          if (!Number.isSafeInteger(n) || n <= 0) {
+            throw new Error(`subParts 含非正安全整数: ${String(n)}`);
+          }
+        }
+        // 升序 + 去重是**契约的一部分**：详情页的排序直接按 subParts[0] 比较，
+        // 不保证的话同一批数据每次显示的顺序都可能不同。
+        if (JSON.stringify(r.subParts) !== JSON.stringify([...r.subParts].sort((a, b) => a - b))) {
+          throw new Error(`subParts 未升序: ${JSON.stringify(r.subParts)}`);
+        }
+        if (new Set(r.subParts).size !== r.subParts.length) {
+          throw new Error(`subParts 有重复: ${JSON.stringify(r.subParts)}`);
         }
         if (typeof r.instrument !== "string") {
           throw new Error(`instrument 类型错: ${JSON.stringify(r.instrument)}`);
@@ -459,7 +501,7 @@ Deno.test("abstain 形态符合契约", () => {
   eq(abstain("x"), {
     section: "其他",
     instrument: "",
-    subPart: null,
+    subParts: [],
     evidence: "",
     abstainReason: "x",
   }, "弃权形态");
