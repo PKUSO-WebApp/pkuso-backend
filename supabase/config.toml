@@ -39,3 +39,6 @@ verify_jwt = true
 
 [functions.llm-analyze]
 verify_jwt = true
+
+[functions.segment-parts]
+verify_jwt = true
