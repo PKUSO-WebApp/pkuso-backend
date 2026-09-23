@@ -1,4 +1,4 @@
-import { type Analysis, abstain, buildAnalysis, SECTIONS } from "./analyze.ts";
+import { type Analysis, abstain, buildAnalysis, MAX_SUB_PARTS, SECTIONS } from "./analyze.ts";
 
 /*
  * handler 单独成模块，index.ts 只负责把它交给 serve()。
@@ -52,8 +52,9 @@ const corsHeaders = {
  *
  * 现在改为：声部走闭集（LLM 选，后端校验），乐器名交给模型直接产中文。
  *
- * 响应字段**平铺在顶层**，且小提琴的 subParts 由声部推导 ——
- * 理由见 analyze.ts 的 VIOLIN_SUB_PART 与下面响应处的注释。
+ * 响应字段**平铺在顶层**，且小提琴的 subParts 优先采信模型、只在模型给不出时
+ * 才由声部推导（是**兜底**，不是覆盖）—— 理由见 analyze.ts 的 VIOLIN_SUB_PART
+ * 与下面响应处的注释。
  */
 function buildPrompt(inputText: string): string {
   return `你是乐团谱务助手。下面是一份分谱首页的识别文本（第一行是文件名，其余是 OCR 结果）。
@@ -98,7 +99,7 @@ ${SECTION_LIST}
    **原文写成区间的要展开**：文件名是「Horn_1-4」「Flute 1-2」这种，就写 [1,2,3,4] / [1,2]，
    **不要照抄成 "1-4"** —— 区间是必须由你展开的写法，后端只认阿拉伯数字的列表。
    **不要写罗马数字、中文数字。**
-   个数最多 32；单个号本身无上限，不要假设最大值。
+   个数最多 ${MAX_SUB_PARTS}；单个号本身无上限，不要假设最大值。
 9. 文本里可能有大量与乐器无关的内容（弓法、力度、排练号、页码）。
    乐器名通常在首页顶部，但**不要假设它一定排在最前面**。
 

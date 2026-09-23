@@ -2,6 +2,7 @@ import {
   abstain,
   buildAnalysis,
   evidenceSupports,
+  MAX_SUB_PARTS,
   normalizeForMatch,
   normalizeSection,
   parseSubParts,
@@ -439,20 +440,39 @@ Deno.test("parseSubParts：空与非法输入一律弃权", () => {
 Deno.test("parseSubParts：个数上界看**去重后**的个数，且与形态无关", () => {
   // 号会进 file_name（`圆号_1,2,3.pdf`），而下载时那个名字要落到用户的文件系统上，
   // 所以上界看的是**最终落进文件名的个数**（= 去重后）。
-  const atLimit = Array.from({ length: 32 }, (_, i) => i + 1);
-  eq(parseSubParts(atLimit).length, 32, "32 个应放行");
-  eq(parseSubParts(atLimit.join(",")).length, 32, "字符串形态同样放行");
-  const over = Array.from({ length: 33 }, (_, i) => i + 1);
-  eq(parseSubParts(over), [], "33 个超上界");
+  // 边界从常量推出来，不写死数字：本用例守的是「**边界正好在 MAX_SUB_PARTS 上**」
+  // 这条规则，而不是「那个数字必须是 32」。写死的话改常量时这条用例要么假红、
+  // 要么（更糟）常量改了它却照过，变成一条名字与行为不符的保护。
+  const atLimit = Array.from({ length: MAX_SUB_PARTS }, (_, i) => i + 1);
+  eq(parseSubParts(atLimit).length, MAX_SUB_PARTS, "正好到上界应放行");
+  eq(parseSubParts(atLimit.join(",")).length, MAX_SUB_PARTS, "字符串形态同样放行");
+  const over = Array.from({ length: MAX_SUB_PARTS + 1 }, (_, i) => i + 1);
+  eq(parseSubParts(over), [], "超上界一个就弃权");
   eq(parseSubParts(over.join(",")), [], "字符串形态同样超上界");
 
   // ⚠️ 判据必须**形态无关**。早先有一句按 `parts.length` 的预检，它只挡数组形态，
   // 于是 `Array(33).fill(1)` 弃权、而 `"1,1,…(33 个)"` 放行 —— 同一语义两种结论。
-  // 对抗测试用变异验证证明了这条边界当时**零保护**（删掉预检，用例一条都不红），
-  // 因为那条「33 个应弃权」用的是字符串，数组形态从没被测过。
-  const dupArray = Array(33).fill(1);
-  eq(parseSubParts(dupArray), [1], "33 个元素但只有 1 个不同的号 —— 落进文件名的是 1 个");
+  // 想验证下面这几条断言真的在守这件事：把 `parts.length > MAX_SUB_PARTS` 那句预检
+  // 加回 `parseSubParts` 开头，看它们是否变红（红的才是有效的）。
+  const dupArray = Array(MAX_SUB_PARTS + 1).fill(1);
+  eq(parseSubParts(dupArray), [1], "超上界的元素数但只有 1 个不同的号 —— 落进文件名的是 1 个");
   eq(parseSubParts(dupArray.join(",")), [1], "同语义的字符串形态结论必须一致");
+});
+
+Deno.test("parseSubParts：空片段在两种形态下结论一致（补位写法不该整串弃权）", () => {
+  // `[1,""]` / `["",1]` 是模型补位时很自然的写法，与 `"1,"` / `",1"` 是**同一件事**：
+  // 空片段只是格式噪声。只在字符串分支豁免它，同一语义就会在两种形态下得到相反结论
+  // —— 又一处「与形态相关」，与上面那条上界测试防的是同一类东西。
+  eq(parseSubParts([1, ""]), [1], "数组里的空串是噪声，不该让整串弃权");
+  eq(parseSubParts(["", 1]), [1], "位置无关");
+  eq(parseSubParts([1, "  "]), [1], "只有空白的元素同理");
+  eq(parseSubParts("1,"), [1], "字符串形态（对照）");
+  eq(parseSubParts(",1"), [1], "字符串形态（对照）");
+
+  // 全是噪声 = 什么都没给 —— 两种形态同样要一致
+  eq(parseSubParts([""]), [], "只有一个空串");
+  eq(parseSubParts(["", ""]), [], "两个空串");
+  eq(parseSubParts(","), [], "只有一个逗号");
 });
 
 Deno.test("parseSubParts：NFKC 收敛的范围比「全角」宽 —— 契约文字要与实现一致", () => {
@@ -517,6 +537,52 @@ Deno.test("subPartsRaw：给了号却没解析出来时必须**看得见**；说
   // 解析成功时当然也不带
   eq(run("1,2").subPartsRaw, undefined, "读懂了的字符串不该再挂原文告警");
   eq(run("1,2").subParts, [1, 2], "逗号串要拆成数组");
+});
+
+Deno.test("subPartsRaw：「没有」的判据是黑名单 —— 用词说没有的不报警，怪形态一律报警", () => {
+  const run = (subParts: unknown) =>
+    buildAnalysis({ section: "圆号", instrument: "F调圆号", subParts, evidence: "Horn_1-4" }, "Horn_1-4");
+
+  // 模型用词表达「没有」的常见写法 —— 挂告警就等于每条正常返回都带一条，信号立刻失去意义。
+  // 这些词直接复用 isNonAnswer 的词表（同为「模型在说答不出来」）。
+  for (const given of ["无", "none", "unknown", "N/A", "null", "NULL", "未识别", "[]"]) {
+    eq(run(given).subPartsRaw, undefined, `${given} 是在说「没有」，不该报警`);
+  }
+
+  // 反过来：非「没有」的怪形态**必须报警**。白名单式判据在这里会把它们当成
+  // 「模型说没有」而静默丢弃 —— 号丢了且没有任何信号，正是本字段要消灭的失败模式。
+  // `true` / `{}` 在 response_format: json_object 下完全可达。
+  for (const given of [true, {}, { "1": 1 }, ["x"]]) {
+    const r = run(given);
+    eq(typeof r.subPartsRaw, "string", `${JSON.stringify(given)} 是怪形态，必须报警而不是静默`);
+  }
+});
+
+Deno.test("subPartsRaw 的原文：非有限数与截断都有确定行为", () => {
+  const raw = (subParts: unknown) =>
+    buildAnalysis({ section: "圆号", instrument: "F调圆号", subParts, evidence: "Horn_1-4" }, "Horn_1-4")
+      .subPartsRaw;
+
+  // Infinity 不能变成字面量 "null" —— 那正是本模块规定的「模型说没有」写法，
+  // 会造出一句「给了 null 却读不懂，请手填」的自相矛盾提示。
+  eq(raw(Infinity), "Infinity", "非有限数要如实显示，不能借用 null 的字面量");
+  eq(raw(NaN), "NaN", "NaN 同理");
+
+  // 原文要 trim：界面是拿它提示用户「你填的是这个」，带空白只会让人困惑
+  eq(raw("  1-4  "), "1-4", "首尾空白要去掉");
+
+  // 截断按**码点**：`slice(0,60)` 数的是 UTF-16 码元，会在 emoji 中间劈开代理对，
+  // 留下一个孤立的高位代理（显示成 �）。
+  const withEmoji = "a".repeat(59) + "😀" + "b".repeat(5);
+  const cut = raw(withEmoji) as string;
+  eq([...cut].length, 61, "60 个码点 + 省略号");
+  eq(cut.includes("😀"), true, "emoji 不能被劈成半个");
+  // 孤立代理的自检：任何高位代理后面必须紧跟低位代理
+  eq(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(cut), false, "不能留下孤立的高位代理");
+
+  // 边界：正好 60 个码点不截断
+  eq(raw("a".repeat(60))?.endsWith("…"), false, "60 个码点不截断");
+  eq(raw("a".repeat(61))?.endsWith("…"), true, "61 个码点要截断");
 });
 
 Deno.test("不变量：section 恒在闭集内、subParts 恒为**升序去重的正整数**数组、instrument 恒为字符串", () => {

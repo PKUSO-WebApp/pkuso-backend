@@ -74,8 +74,9 @@ const VIOLIN_SUB_PART: Record<string, number> = {
 
 /**
  * 乐器名「看着就是小提琴」。用于 buildAnalysis 末尾那道兜底：
- * 声部名不守词表时，就再没有别的依据能定出分声部号了（模型的输出不作数，
- * 序号只由 `VIOLIN_SUB_PART` 按声部推导）—— 两处都没有，宁可弃权让用户手填。
+ * 序号本来有**两个**来源 —— 模型自己给的 `subParts`，或由声部名（`VIOLIN_SUB_PART`）推出来。
+ * 声部名不守词表、模型又一个号都没给时，两处都空，就再没有依据了 ——
+ * 这时候宁可弃权让用户手填，也不要猜一个序号出来。
  * 中提琴 / 大提琴 / 低音提琴都不含这些词，不会被误判。
  *
  * 匹配前先过 `normalizeForMatch`，所以全角（`Ｖｉｏｌｉｎ`）、大小写、空格标点
@@ -180,10 +181,15 @@ const MIN_EVIDENCE_CHARS = 2;
 /**
  * 乐器名的长度上界。
  *
- * 旧前端把 instrument 直接当**存储路径的目录名**用
- * （`{scoreId}/${instrument}/${fileName}.pdf`），一个几千字的「乐器名」
- * 会造出一条荒唐的路径。真实乐器名没有超过 20 字的，给到 64 已经极宽松 ——
- * 触顶说明模型在胡说，弃权让用户填比放它进 storage 好。
+ * ⚠️ 这条 guard 的**理由换过一次**：它原是用来防「几千字的乐器名造出一条荒唐的
+ * storage 路径」（旧前端把 instrument 当路径的目录名用）。那个前提**已经不成立**
+ * —— 存储键是 `{scoreId}/{行 id}.pdf`（uuid），乐器名进不去（也进不去的原因见
+ * pkuso-web `upload-modal.tsx` 的 `pathOf`：Storage 的键不认中日韩字符）。
+ *
+ * 现在它守的是**另外两处**：乐器名会进 `file_name`（`F调圆号.pdf`，用户下载时
+ * 落到自己文件系统上的名字）和 `sheet_music_files.instrument` 列。
+ * 真实乐器名没有超过 20 字的，给到 64 已经极宽松 —— 触顶说明模型在胡说，
+ * 弃权让用户填比把它写进文件名与库好。
  *
  * 只设长度、不做字符替换：`木琴/钟琴` 这种合称是 #12 验收标准里允许的写法，
  * 而后端没有立场去改写一个用户会看到的乐器名。
@@ -193,8 +199,10 @@ const MAX_INSTRUMENT_CHARS = 64;
 /**
  * 乐器名里绝对不能出现的字符。
  *
- * 旧前端把 instrument 直接当**存储路径的目录名**用，而乐器名从白名单改成开集之后，
- * 模型给的任意串都会流到那里。`..` 构成路径穿越，控制字符会破坏路径与文件名。
+ * 与上一条同源：理由从「storage 路径」换成了 `file_name` / DB 列。
+ * 乐器名从白名单改成开集之后，模型给的任意串都会流到那两处。`..` 在**下载文件名**
+ * 里会变成路径上跳（浏览器与系统保存时对 `/`、`..` 的处理各不相同），
+ * 控制字符会破坏文件名与显示。
  *
  * **拦下让用户手填，而不是替换字符**：`木琴/钟琴` 这种合称是 #12 允许的写法，
  * 后端没有立场去改写一个用户会看到的乐器名 —— 而 `/` 只是多一层目录，不致命。
@@ -264,8 +272,12 @@ const isValidSubPart = (n: number): boolean => Number.isSafeInteger(n) && n > 0;
 /**
  * 分声部号的**个数**上界。它不防模型犯错，防的是文件名被撑爆：
  * 号会进 `file_name`（`圆号_1,2,3.pdf`），而下载时那个名字要落到用户的文件系统上。
+ *
+ * **要 export**：prompt 里那句「个数最多 N」由它插值出来（同 `SECTIONS` → `SECTION_LIST`
+ * 的做法）。抄一份数字进 prompt 的话，改了这里而 prompt 仍在对模型说旧值 ——
+ * 模型照着旧上界给号、代码按新上界弃权，两边静默拆台。
  */
-const MAX_SUB_PARTS = 32;
+export const MAX_SUB_PARTS = 32;
 
 /**
  * 分声部号。**唯一合法格式是英文逗号分隔的阿拉伯数字**：`1` / `1,2` / `1,2,3`。
@@ -305,6 +317,10 @@ export function parseSubParts(raw: unknown): number[] {
       continue;
     }
     if (typeof part !== "string") return [];
+    // 数组里的空串与字符串里的空片段是**同一件事**（补位写法 / 多打的逗号），
+    // 都只是格式噪声。只在下面那层豁免会让 `[1,""]` 弃权、而 `"1,"` 放行 ——
+    // 又一处与形态相关的判据，正是上面那段注释要消灭的东西。
+    if (part.trim() === "") continue;
     const tokens = part
       .normalize("NFKC")
       .replace(/[，、]/g, ",")
@@ -326,8 +342,10 @@ export function parseSubParts(raw: unknown): number[] {
   //
   // ⚠️ 刻意**不**在解析前按 `parts.length` 预检 —— 那会让判据变成**形态相关**的：
   // `Array(33).fill(1)` 与 `"1,1,…（33 个）"` 语义完全相同，前者弃权而后者放行。
-  // （这个不一致是对抗测试用变异验证逼出来的：删掉那句预检，提交的用例**一条都不红** ——
-  //   因为那条「33 个应弃权」用的是字符串，数组形态从没被测过。）
+  //
+  // 想知道这句预检值不值得有，跑一次就知道：把它加回函数开头，看
+  // 「parseSubParts：个数上界看**去重后**的个数，且与形态无关」这条用例是否变红。
+  // （别把某次实测的结论写在这里 —— 后来人补一条数组形态的用例，那句话就不再成立了。）
   if (out.size > MAX_SUB_PARTS) return [];
 
   return [...out].sort((a, b) => a - b);
@@ -336,23 +354,48 @@ export function parseSubParts(raw: unknown): number[] {
 /**
  * 模型**确实给了点什么**（而不是在表达「没有分声部」）。
  *
- * `"null"` 是模型表达「无」的常见写法，与空串、空数组一样算「没给」—— 否则每次
- * 正常返回都会挂上一条「没解析出来」的告警，那条告警立刻失去意义。
+ * 判据是**黑名单**：只有明确表达「没有」的那几种才算没给，**其余一律算给了**。
+ * 拿不准时偏向**报警** —— 多一条提示让用户看一眼，好过把真号静默丢掉
+ * （那正是 `subPartsRaw` 要消灭的失败模式）。反过来写成白名单（只认 number /
+ * 非空数组 / 非空字符串）会两头都错：
+ *  · **漏报**：模型回 `true` 或 `{"1":1}`（`response_format: json_object` 下完全可达）
+ *    被当成「没有」，号丢了且**没有任何信号**；
+ *  · **误报**：模型用「无 / unknown / N/A」表达「没有」时照样挂告警，
+ *    于是每条正常返回都带一条 —— 那条信号立刻失去意义。
+ *
+ * 「没有」的用词直接复用 `isNonAnswer`：它本来就是为「模型在说答不出来」建的词表，
+ * 两处各抄一份必然漂移。
  */
 function providedSubParts(raw: unknown): boolean {
-  if (typeof raw === "number") return true;
+  if (raw === null || raw === undefined) return false;
   if (Array.isArray(raw)) return raw.length > 0;
-  if (typeof raw === "string") {
-    const s = raw.trim();
-    return s !== "" && s.toLowerCase() !== "null";
-  }
-  return false;
+  if (typeof raw === "string") return raw.trim() !== "" && !isNonAnswer(raw);
+  // number / boolean / object …：都不是「没有」的表达，算给了，交给 parseSubParts 去拒
+  return true;
 }
 
-/** 把「没解析出来的原文」压成一句短的，供界面提示用户手填。太长会把响应撑大且没人看 */
+/**
+ * 把「没解析出来」的那个值压成一句短的，供界面提示用户手填。太长会把响应撑大且没人看。
+ *
+ * ⚠️ 它**不是原文回显**，只是给用户看的线索。两处损失是 `JSON.parse` 造成的、找不回来：
+ * 超长整数在解析时就已经丢精度（`99999999999999999999999` → `1e+23`），
+ * 非有限数（`1e999` → `Infinity`）只剩一个名字。所以前端别拿它当原文用。
+ */
 function describeRaw(raw: unknown): string {
-  const s = typeof raw === "string" ? raw.trim() : (JSON.stringify(raw) ?? String(raw));
-  return s.length > 60 ? `${s.slice(0, 60)}…` : s;
+  let s: string;
+  if (typeof raw === "string") {
+    s = raw.trim();
+  } else if (typeof raw === "number") {
+    // 单独走 String()：`JSON.stringify` 会把 Infinity / NaN 写成字面量 `null` ——
+    // 而 `"null"` 正是本模块规定的「模型说没有」写法，那会造出一句
+    // 「给了 null 却读不懂，请手填」的自相矛盾提示。
+    s = String(raw);
+  } else {
+    s = JSON.stringify(raw) ?? String(raw);
+  }
+  // 按**码点**截断：`slice(0, 60)` 数的是 UTF-16 码元，会在 emoji 中间劈开代理对
+  const points = [...s];
+  return points.length > 60 ? `${points.slice(0, 60).join("")}…` : s;
 }
 
 /**
@@ -439,12 +482,14 @@ export function buildAnalysis(parsed: unknown, source: unknown): Analysis {
 
   // 兜底 —— 不依赖 prompt 是否被遵守。
   //
-  // 小提琴是**唯一**「两支共享同一个 instrument 名」的声部：序号一旦缺失，
-  // 旧前端会为两份分谱算出同一条存储路径（{scoreId}/小提琴/小提琴.pdf），
-  // 而上传是 upsert:true —— 后传的静默覆盖先传的。
+  // 小提琴是**唯一**「两支共享同一个 instrument 名」的声部。⚠️ 它原本的理由是
+  // 「序号一旦缺失，旧前端会给两份分谱算出同一条路径，`upsert:true` 让后传的静默
+  // 覆盖先传的」—— **这条已经不成立**（存储键是 `{scoreId}/{行 id}.pdf`，见上面
+  // `VIOLIN_SUB_PART` 那段）。它现在守的是**另一件事**：序号是这份谱唯一的身份标识，
+  // 猜错会让 `小提琴_2.pdf` 里装着第二小提琴的谱，而用户没有任何线索去发现。
   //
-  // 序号从两处取：声部名（VIOLIN_SUB_PART）或模型自己给的 subParts。两处都没有，
-  // 就是真的分辨不出来 —— 宁可不识别（让用户手填），也不要覆盖掉一份分谱。
+  // 序号从两处取：模型自己给的 `subParts`（优先，见上），或声部名（`VIOLIN_SUB_PART`）。
+  // 两处都没有，就是真的分辨不出来 —— 宁可不识别（让用户手填），也不要猜一个。
   //
   // ⚠️ 这里**不能**再加 `sectionRaw &&`：`sectionRaw` 只在 section 落闭集外时才出现，
   // 而「其他」是闭集内的合法值、又正是 prompt 规则 3 指定的退路 ——
