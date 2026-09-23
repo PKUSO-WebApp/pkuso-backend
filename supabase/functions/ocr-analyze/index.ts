@@ -5,8 +5,9 @@ import { shapeOcrResponse } from "./shape.ts";
  * 入口只做三件事：读报文 → 打 OCR.space → 用 shape.ts 整形后返回。
  * 整形逻辑单独成模块，理由与 llm-analyze 同：顶层 `serve()` 会绑端口，一被测试 import 就炸。
  *
- * 本文件刻意**不跑 deno fmt**：本仓 18 个函数文件里 15 个没格式化过，只格改到的文件
- * 会让每个 PR 都背一份格式噪声（这次是 59/97 行）。要统一就另起一个纯格式提交。
+ * 本文件刻意**不跑 deno fmt**：本仓 `supabase/functions/` 下 18 个 .ts 里 17 个不是 fmt-clean，
+ * 只格改到的文件会让每个 PR 都背一份格式噪声（第一轮评审在本次 diff 上量到约 61% 是格式变动）。
+ * 要统一就另起一个纯格式提交，别混进语义改动里。
  */
 
 const corsHeaders = {
@@ -54,8 +55,9 @@ serve(async (req) => {
     // 会让「不想要坐标」的调用方反而拿到一个大响应。
     const wantOverlay = overlay === true;
     // 非法引擎号**退回默认**而不是报错：这是质量旋钮，不是正确性输入，
-    // 为一个拼错的参数让整次 OCR 失败不值得。判据用 `typeof === 'number'`，
-    // 否则 `engine: true` 会被 Number() 折成 1 而静默选中引擎 1（与 overlay 的严格判据不一致）。
+    // 为一个拼错的参数让整次 OCR 失败不值得。
+    // ⚠️ 判据**不要改成 `Number(engine)`**：那会把 `engine: true` 折成 1、`"1"` 折成 1，
+    // 于是一个「不像引擎号」的输入反而静默选中了某个引擎。要与 overlay 一样从严。
     const engineNo = typeof engine === 'number' && ENGINES.has(engine) ? engine : 2;
 
     const formData = new FormData();
@@ -88,13 +90,19 @@ serve(async (req) => {
 
     return new Response(
       JSON.stringify({
+        // 展开放**前面**：`shaped` 将来若多出一个叫 success/language/overlay/engine 的字段，
+        // 显式的这几个必须赢。反过来的话重复键会被静默覆盖 —— 而本仓三条链路都不做类型检查
+        //（deno test 只检查被 import 的模块、部署走 esbuild 打包、CI 里没有 check 步骤），
+        // 覆盖了也没人会发现。
+        ...shaped,
         success: true,
         language: language || 'auto',
-        // 回显是否真的按 overlay 处理了：调用方拿到空的 pages 时，
-        // 「没给我坐标」和「要了坐标但上游没给」是两件不同的事 ——
-        // 不回显就只能靠猜，正是本仓最忌讳的那种静默差异。
+        // 请求侧回显：它答的是「这一次到底有没有要坐标」。判据是严格 `=== true`，
+        // 所以 `overlay: "true"`（字符串，最可能的误用形式）会被判成**不要** ——
+        // 不回显就无从发现。上游到底给没给是**另一件事**，看 `pages[].overlayProvided`。
         overlay: wantOverlay,
-        ...shaped,
+        // 同理：非法引擎号会静默回落 2，不回显调用方就分不清拿到的是哪个引擎的结果。
+        engine: engineNo,
       }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
