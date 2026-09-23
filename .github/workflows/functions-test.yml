@@ -5,10 +5,13 @@ name: Functions Test
 # audit-check.yml 只查 audit/ 目录。于是 supabase/functions/ 下的回归保护
 # 全靠「有人记得在本地跑 deno test」—— 而那正是最容易不发生的事。
 #
-# `deno test --allow-env supabase/functions/` 全绿；**测试自身不发起网络调用、不需要任何密钥**
-# （它们桩掉了 fetch；不过首跑仍要从 deno.land 取 std 断言库）。
+# `deno test --allow-env --allow-read supabase/functions/` 全绿；**测试自身不发起网络调用、
+# 不需要任何密钥**（它们桩掉了 fetch；不过首跑仍要从 deno.land 取 std 断言库）。
 # ⚠️ **必须带 --allow-env**：不带的话若干 index.test.ts 会因取不到 env 权限直接 error
 #（自己跑一次不带 flag 的就知道当下有几个 —— 别把计数写进注释，它会腐烂）。
+# ⚠️ **必须带 --allow-read**：`entry-guard.test.ts` 要读各函数的 `index.ts` 源码 ——
+# 入口文件按设计没法被 import 进测试（顶层 serve() 会绑端口），所以它没有运行时覆盖，
+# 只能靠静态检查兜住（那条守卫就是这么发现 segment-parts 漏 import serve 的）。
 
 on:
   pull_request:
@@ -30,4 +33,4 @@ jobs:
           deno-version: v2.x
 
       - name: Run function tests
-        run: deno test --allow-env supabase/functions/
+        run: deno test --allow-env --allow-read supabase/functions/
