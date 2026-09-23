@@ -1,79 +1,18 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { handler } from "./handler.ts";
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-};
-
-serve(async (req) => {
-  if (req.method === 'OPTIONS') {
-    return new Response(null, { status: 204, headers: corsHeaders });
-  }
-
-  try {
-    const { file_base64, mime_type, language } = await req.json();
-
-    if (!file_base64) {
-      return new Response(
-        JSON.stringify({ success: false, error: 'file_base64 is required' }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
-    const apiKey = Deno.env.get('OCR_SPACE_API_KEY');
-    if (!apiKey) {
-      return new Response(
-        JSON.stringify({ success: false, error: 'OCR_SPACE_API_KEY not configured' }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
-    // Accept both PDF and image from frontend
-    const mime = mime_type || 'image/png';
-    const dataUri = `data:${mime};base64,${file_base64}`;
-
-    const formData = new FormData();
-    formData.append('base64Image', dataUri);
-    formData.append('filetype', mime.startsWith('image/') ? 'JPG' : 'PDF');
-    formData.append('language', language || 'auto');
-    formData.append('isOverlayRequired', 'false');
-    formData.append('OCREngine', '2');
-
-    const ocrResponse = await fetch('https://api.ocr.space/parse/image', {
-      method: 'POST',
-      headers: { 'apikey': apiKey },
-      body: formData,
-    });
-
-    const ocrData = await ocrResponse.json();
-
-    if (ocrData.IsErroredOnProcessing) {
-      return new Response(
-        JSON.stringify({
-          success: false,
-          error: ocrData.ErrorMessage?.[0] || 'OCR processing failed'
-        }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
-    const parsedText = ocrData.ParsedResults?.[0]?.ParsedText || '';
-
-    return new Response(
-      JSON.stringify({
-        success: true,
-        text: parsedText,
-        language: language || 'auto',
-      }),
-      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
-  } catch (error) {
-    return new Response(
-      JSON.stringify({
-        success: false,
-        error: error instanceof Error ? error.message : String(error),
-      }),
-      { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
-  }
-});
+/**
+ * 入口只做一件事：把 handler 交给 serve()。实现全在 handler.ts。
+ *
+ * 拆开的理由见 handler.ts 顶部：顶层 `serve()` 会真的绑端口，一被测试 import 就炸，
+ * 而响应组装那几处（展开顺序 / 参数判据 / 回显）恰恰是最容易出错、最需要断言的部分。
+ * 先例见 llm-analyze/index.ts。
+ *
+ * 本文件刻意**不跑 deno fmt**：本目录绝大多数文件都不是 fmt-clean，只格改到的文件会让
+ * 每个 PR 都背一份格式噪声（第一轮评审在本次 diff 上量到约 61% 是格式变动）。
+ * 要统一就另起一个纯格式提交，别混进语义改动里。
+ *
+ * ⚠️ 这里**刻意不写"几个文件没格式化"** —— 那类计数会随文件增删、deno 版本变化而腐烂，
+ * 而没人会重测。要知道当下是多少，跑 `deno fmt --check supabase/functions/`。
+ */
+serve(handler);
