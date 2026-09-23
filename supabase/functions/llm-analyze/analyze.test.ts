@@ -464,7 +464,7 @@ Deno.test("parseSubParts：NFKC 收敛的范围比「全角」宽 —— 契约�
   // 折不出合法 token 的一律弃权
   eq(parseSubParts("⑵"), [], "带括号数字（折成 `(2)`）");
   eq(parseSubParts("½"), [], "分数");
-  eq(parseSubParts("Ⅰ,Ⅱ"), [], "罗马数字 U+2160（NFKC 不折它）");
+  eq(parseSubParts("Ⅰ,Ⅱ"), [], "罗马数字 U+2160（折成 I/II —— 是折了，只是折出来不是数字）");
 });
 
 Deno.test("parseSubParts：原型链上的键不是分声部号", () => {
