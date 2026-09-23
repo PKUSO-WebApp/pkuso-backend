@@ -1,4 +1,4 @@
-import { type Analysis, abstain, buildAnalysis, SECTIONS } from "./analyze.ts";
+import { type Analysis, abstain, buildAnalysis, MAX_SUB_PARTS, SECTIONS } from "./analyze.ts";
 
 /*
  * handler 单独成模块，index.ts 只负责把它交给 serve()。
@@ -52,9 +52,9 @@ const corsHeaders = {
  *
  * 现在改为：声部走闭集（LLM 选，后端校验），乐器名交给模型直接产中文。
  *
- * 响应字段**平铺在顶层**，且小提琴的 subPart 由声部推导成 1/2 ——
- * 这两件事都是为了让旧版前端在切换窗口期继续可用，理由见 analyze.ts 的
- * VIOLIN_SUB_PART 与下面响应处的注释。
+ * 响应字段**平铺在顶层**，且小提琴的 subParts 优先采信模型、只在模型给不出时
+ * 才由声部推导（是**兜底**，不是覆盖）—— 理由见 analyze.ts 的 VIOLIN_SUB_PART
+ * 与下面响应处的注释。
  */
 function buildPrompt(inputText: string): string {
   return `你是乐团谱务助手。下面是一份分谱首页的识别文本（第一行是文件名，其余是 OCR 结果）。
@@ -66,7 +66,7 @@ ${SECTION_LIST}
 这些都判断不出来时，用「其他」。
 
 只返回一个 JSON 对象，不要任何解释文字：
-{"section": "声部", "instrument": "中文乐器名", "subPart": 数字或 null, "evidence": "原文片段"}
+{"section": "声部", "instrument": "中文乐器名", "subParts": [数字...], "evidence": "原文片段"}
 
 规则：
 1. instrument 用**中文里这件乐器的标准叫法**（乐手会这么说的名字），不要逐词直译。
@@ -80,7 +80,7 @@ ${SECTION_LIST}
 2. evidence 必须是从下面文本里**原样抄出**的片段：保持原语言、原拼写，不要翻译、
    不要改写、不要补全。找不到能支撑结论的原文片段时，就返回弃权形态。
 3. 弃权形态（证据不足或读不出乐器）：
-   {"section": "其他", "instrument": "", "subPart": null, "evidence": ""}
+   {"section": "其他", "instrument": "", "subParts": [], "evidence": ""}
    **不要猜。**
 4. 先判版次语言，再解释乐器词。版次语言由**出版社**决定，**不由作曲家国籍决定** ——
    同一位作曲家的不同版次可能分别是俄文版、英文版、德文版。
@@ -92,9 +92,14 @@ ${SECTION_LIST}
    意大利文 Corno → 圆号（不是小号）；Tromba → 小号；Trombone → 长号；
    意大利文 Campanelli → 钟琴；Silofono → 木琴；Arpa → 竖琴；Timpani → 定音鼓。
 7. 小提琴：section 用「第一小提琴」或「第二小提琴」，instrument 用「小提琴」。
-   其他多声部乐器（长笛、双簧管、单簧管、大管、圆号、小号、长号…）用 subPart 表示 1/2/3。
-8. subPart 可能是阿拉伯数字（2）、罗马数字（II）或中文数字（二）；没有分声部时为 null。
-   分声部号无上限，不要假设最大值。
+   一份谱子同时含第一、第二小提琴时，section 用「第一小提琴」、subParts 写 [1,2]。
+   其他多声部乐器（长笛、双簧管、单簧管、大管、圆号、小号、长号…）同样用 subParts。
+8. subParts 是**数组**，元素是阿拉伯数字，一份谱子覆盖几个分声部就写几个：
+   只含圆号 2 → [2]；圆号 1、2、3、4 订成一份 → [1,2,3,4]；没有分声部 → []。
+   **原文写成区间的要展开**：文件名是「Horn_1-4」「Flute 1-2」这种，就写 [1,2,3,4] / [1,2]，
+   **不要照抄成 "1-4"** —— 区间是必须由你展开的写法，后端只认阿拉伯数字的列表。
+   **不要写罗马数字、中文数字。**
+   个数最多 ${MAX_SUB_PARTS}；单个号本身无上限，不要假设最大值。
 9. 文本里可能有大量与乐器无关的内容（弓法、力度、排练号、页码）。
    乐器名通常在首页顶部，但**不要假设它一定排在最前面**。
 
@@ -232,7 +237,7 @@ export async function handler(req: Request): Promise<Response> {
           analysis = abstain('bad-json');
         }
 
-        // 字段必须**平铺**在顶层：旧版前端读的是 data.instrument / data.subPart
+        // 字段必须**平铺**在顶层：前端读的是 data.instrument / data.subParts
         // （pkuso-web upload-modal.tsx）。嵌一层 analysis 会让它读到 undefined，
         // 而 String(undefined) 是个真值 —— 会建出一个名叫「undefined」的声部。
         // 加列式 migration 换来的顺序无关性，就靠这个平铺的响应兑现。

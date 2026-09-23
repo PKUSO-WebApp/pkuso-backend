@@ -1,4 +1,5 @@
 import { handler, retry } from "./handler.ts";
+import { MAX_SUB_PARTS } from "./analyze.ts";
 
 // 把退避压到 1ms：真等 1s/2s/4s 会让整套用例跑 40 秒以上，没人愿意跑就等于没有保护。
 // 退避的**比例**由 `retry.baseDelayMs` 的默认值保证，见下面那条断言。
@@ -23,7 +24,7 @@ const OK_BODY = JSON.stringify({
       content: JSON.stringify({
         section: "打击乐",
         instrument: "木琴",
-        subPart: null,
+        subParts: [],
         evidence: "Allegretto",
       }),
     },
@@ -35,6 +36,8 @@ const SRC = "文件名: x.pdf\nOCR 文本: Allegretto";
 let calls = 0;
 let backoffs: number[] = [];
 let lastAt = 0;
+/** 最近一次上游请求里的 prompt 正文 —— 用来断言 prompt 与代码常量没有漂移 */
+let lastPrompt = "";
 let respond: (call: number) => Response | Promise<Response> = () =>
   new Response(OK_BODY, { status: 200 });
 
@@ -45,6 +48,13 @@ globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
     throw new Error(`意外请求: ${url}`);
   }
   calls++;
+  try {
+    const raw = typeof init?.body === "string" ? init.body : "";
+    lastPrompt = (JSON.parse(raw) as { messages?: Array<{ content?: string }> })
+      ?.messages?.[0]?.content ?? "";
+  } catch {
+    lastPrompt = "";
+  }
   const now = Date.now();
   if (lastAt) backoffs.push(now - lastAt);
   lastAt = now;
@@ -62,6 +72,7 @@ const reset = (fn: typeof respond) => {
   calls = 0;
   backoffs = [];
   lastAt = 0;
+  lastPrompt = "";
 };
 
 const post = (body: unknown) =>
@@ -87,8 +98,19 @@ Deno.test("正常路径：平铺字段 + 只请求一次", async () => {
   const j = await res.json();
   eq(res.status, 200, "状态码");
   eq(calls, 1, "上游调用次数");
-  // 字段必须平铺在顶层 —— 旧前端读 data.instrument / data.subPart
-  eq([j.success, j.section, j.instrument, j.subPart], [true, "打击乐", "木琴", null], "响应体");
+  // 字段必须平铺在顶层 —— 前端读 data.instrument / data.subParts
+  eq([j.success, j.section, j.instrument], [true, "打击乐", "木琴"], "响应体");
+  eq(j.subParts, [], "没有分声部时是空数组（不再是 null）");
+});
+
+Deno.test("prompt 里的分声部号上界由 MAX_SUB_PARTS 插值，不是手抄一份", async () => {
+  reset(() => new Response(OK_BODY, { status: 200 }));
+  await post({ text: SRC });
+  // 抄一份数字进 prompt 的后果：改了常量而 prompt 仍在对模型说旧值 ——
+  // 模型照旧上界给号、代码按新上界弃权，两边静默拆台（同 SECTION_LIST 的理由）。
+  eq(lastPrompt.includes(`个数最多 ${MAX_SUB_PARTS}`), true, "上界要与常量一致");
+  // 反向自检：真拿到了 prompt 正文，不是因为两边都空而「通过」
+  eq(lastPrompt.length > 200, true, "prompt 正文确实取到了");
 });
 
 Deno.test("fetch 抛异常也要重试到底（网络故障是最该重试的一类）", async () => {
