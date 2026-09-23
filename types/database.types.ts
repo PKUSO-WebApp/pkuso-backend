@@ -781,6 +781,7 @@ export type Database = {
           page_count: number | null
           part_id: string | null
           storage_path: string
+          sub_parts: number[] | null
           uploaded_by: string | null
         }
         Insert: {
@@ -792,6 +793,7 @@ export type Database = {
           page_count?: number | null
           part_id?: string | null
           storage_path: string
+          sub_parts?: number[] | null
           uploaded_by?: string | null
         }
         Update: {
@@ -803,6 +805,7 @@ export type Database = {
           page_count?: number | null
           part_id?: string | null
           storage_path?: string
+          sub_parts?: number[] | null
           uploaded_by?: string | null
         }
         Relationships: [
