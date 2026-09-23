@@ -142,6 +142,33 @@ Deno.test("上游报错 → 400，并把上游的原因透出来", async () => {
   upstream = () => new Response(OK_BODY, { status: 200 });
 });
 
+Deno.test("**上游返回 0 页 → 502 失败**，绝不能报 success（实测的限流形态）", async () => {
+  // 实测的报文：没有 IsErroredOnProcessing、没有 FileParseExitCode、没有 ErrorMessage，
+  // 就是一个空的 ParsedResults。这种「成功但 0 页」如果报 success，调用方拿到的
+  // `{success:true, text:"", pageCount:0}` 与「图确实空白」不可区分 —— 分段路径会把
+  // 每一页都当成空白页，模型无从判断，界面上还会报「共 1 段」。
+  for (const body of ['{"ParsedResults":[]}', '{"ParsedResults":null}', "{}"]) {
+    upstream = () => new Response(body, { status: 200 });
+    const res = await call({ file_base64: B64 });
+    assertEquals(res.status, 502, `上游报文 ${body} 应判失败`);
+    const j = await res.json();
+    assertEquals(j.success, false, `上游报文 ${body} 不能报 success`);
+    assertEquals(typeof j.error, "string");
+  }
+  upstream = () => new Response(OK_BODY, { status: 200 });
+});
+
+Deno.test("对照：上游给了 1 页但文字为空 → **仍是 success**（空图与 0 页是两件事）", async () => {
+  upstream = () => new Response(JSON.stringify({ ParsedResults: [{ ParsedText: "" }] }), { status: 200 });
+  const res = await call({ file_base64: B64 });
+  assertEquals(res.status, 200);
+  const j = await res.json();
+  assertEquals(j.success, true);
+  assertEquals(j.pageCount, 1);
+  assertEquals(j.text, "");
+  upstream = () => new Response(OK_BODY, { status: 200 });
+});
+
 Deno.test("没有 API key → 500 且给出可诊断的原因", async () => {
   const saved = Deno.env.get("OCR_SPACE_API_KEY");
   Deno.env.delete("OCR_SPACE_API_KEY");
