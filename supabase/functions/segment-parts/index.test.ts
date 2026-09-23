@@ -96,6 +96,7 @@ Deno.test("prompt 的判据必须是「首页才有的标题块」，并排除�
   eq(lastPrompt.includes("只在该份首页才有的版式"), true, "要给出正确判据（标题块）");
   eq(lastPrompt.includes("每一页页眉都印着乐器名"), true, "要点明「页眉每页都有乐器名」");
   eq(lastPrompt.includes("会被 OCR 读错"), true, "要点明「乐器名变化」也不可靠的理由");
+  eq(lastPrompt.includes("装饰页"), true, "要点明「只有作曲家名的装饰页」不是边界");
   // 自检：确实取到了 prompt 正文，不是因为两边都空而「通过」
   eq(lastPrompt.length > 300, true, "prompt 正文确实取到了");
 });
