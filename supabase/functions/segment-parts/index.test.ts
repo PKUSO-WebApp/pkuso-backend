@@ -86,14 +86,16 @@ const eq = (actual: unknown, expected: unknown, msg: string) => {
   }
 };
 
-Deno.test("prompt 必须写到「边界＝乐器/号发生变化」，而不是「出现了乐器名」", async () => {
+Deno.test("prompt 的判据必须是「首页才有的标题块」，并排除两条错的判据", async () => {
   reset(() => new Response(OK_BODY, { status: 200 }));
   await post({ pages: PAGES, pageCount: 4 });
-  // ⚠️ 这条规则是实测逼出来的：Breitkopf 那类老版分谱**每页页眉都印着乐器名**
-  //（`Violino I.` 在续页上也有），所以「这页有乐器名」不能当边界 ——
-  // 少了这句，模型会把单声部的谱子每页都判成新开头（实测 Violins_I 11 页切成 9 段）。
-  eq(lastPrompt.includes("发生了变化"), true, "要给出「变化」这个判据");
-  eq(lastPrompt.includes("每一页的页眉"), true, "要点明「页眉每页都有乐器名」这个陷阱");
+  // ⚠️ 这三条规则都是**实测逼出来的**（Egmont 11 份语料，见 PR 描述）：
+  //  · 判据本身 = 「这一页出现了只在该份首页才有的版式（作品标题/作曲家名）」
+  //  · 排除「出现了乐器名」—— 每页页眉都有，照它切会把 11 页的单声部切成 9 段
+  //  · 排除「乐器名变了」—— 续页的乐器名会被 OCR 读错（Corno IV→Corno I）
+  eq(lastPrompt.includes("只在该份首页才有的版式"), true, "要给出正确判据（标题块）");
+  eq(lastPrompt.includes("每一页页眉都印着乐器名"), true, "要点明「页眉每页都有乐器名」");
+  eq(lastPrompt.includes("会被 OCR 读错"), true, "要点明「乐器名变化」也不可靠的理由");
   // 自检：确实取到了 prompt 正文，不是因为两边都空而「通过」
   eq(lastPrompt.length > 300, true, "prompt 正文确实取到了");
 });
