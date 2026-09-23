@@ -1,0 +1,31 @@
+name: Functions Test
+
+# 为什么需要这个文件：**后端的函数测试此前根本不在 CI 里跑**。
+# sync-dev.yml 只做 db push → 部署函数 → 同步类型，deploy-prod.yml 是同一条路，
+# audit-check.yml 只查 audit/ 目录。于是 supabase/functions/ 下的回归保护
+# 全靠「有人记得在本地跑 deno test」—— 而那正是最容易不发生的事。
+#
+# 实测（2026-09-23）：`deno test --allow-env supabase/functions/` 全绿、不出网、不需要任何密钥
+# （测试自己桩掉了 fetch）。注意**必须带 --allow-env**，否则有两个文件会因权限直接 error。
+
+on:
+  pull_request:
+    paths:
+      - 'supabase/functions/**'
+  push:
+    branches: [main]
+    paths:
+      - 'supabase/functions/**'
+
+jobs:
+  deno-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Run function tests
+        run: deno test --allow-env supabase/functions/
