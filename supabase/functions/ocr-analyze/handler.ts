@@ -87,6 +87,31 @@ export async function handler(req: Request): Promise<Response> {
     // text / pageCount / pages 都来自这里；`text` 仍是第一页的文本，老调用方一字不变
     const shaped = shapeOcrResponse(ocrData, wantOverlay);
 
+    // ⚠️ 上游**返回了 0 页**（`ParsedResults` 为空或缺失）= 它一个字都没给。
+    // 这**不是**「这张图没有文字」——后者是 `ParsedResults` 有一条、`ParsedText` 为空。
+    // 不能报 success：调用方拿到 `{success:true, text:"", pageCount:0}` 时，
+    // 与「图确实是空白的」不可区分，于是整条链路静默降级 —— 本仓专门记过这个坑。
+    //
+    // 实测（2026-09-24，dev，窄带图 1788×288 与整页图都复现）：OCR.space 在
+    // 配额/限流状态下会回一个**不带任何错误标志**的空结果集 ——
+    // `IsErroredOnProcessing` 为假，所以上面那条错误分支不走；`FileParseExitCode`
+    // 与 `ErrorMessage` 都没有，所以 `shapeOcrResponse` 也判不出失败。同一张图
+    // 换个 engine 有时又能读出来（实测 e2 连续 3 次空、e3 连续 3 次读出同一张图）。
+    // 结论：**「成功但 0 页」这个形状必须由我们把它变成失败**，不能指望上游报错。
+    //
+    // 502（而不是 400）：不是调用方的错，是上游没给结果 —— 顺带让前端既有的
+    // `OCR_TRANSIENT`（含 `HTTP 5\d\d`）重试逻辑对它生效（瞬时限流重试一次可能就好了）。
+    if (shaped.pageCount === 0) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: '上游未返回任何识别结果（配额用尽或限流，也可能是图片不可识别）',
+          upstreamPages: 0,
+        }),
+        { status: 502, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
     return new Response(
       JSON.stringify({
         // 展开放**前面**：`shaped` 将来若多出一个叫 success/language/overlay/engine 的字段，
