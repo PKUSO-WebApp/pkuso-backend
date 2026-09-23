@@ -8,8 +8,11 @@ import { handler } from "./handler.ts";
  * 而响应组装那几处（展开顺序 / 参数判据 / 回显）恰恰是最容易出错、最需要断言的部分。
  * 先例见 llm-analyze/index.ts。
  *
- * 本文件刻意**不跑 deno fmt**：本仓 `supabase/functions/` 下 18 个 .ts 里 17 个不是 fmt-clean，
- * 只格改到的文件会让每个 PR 都背一份格式噪声（第一轮评审在本次 diff 上量到约 61% 是格式变动）。
+ * 本文件刻意**不跑 deno fmt**：本目录绝大多数文件都不是 fmt-clean，只格改到的文件会让
+ * 每个 PR 都背一份格式噪声（第一轮评审在本次 diff 上量到约 61% 是格式变动）。
  * 要统一就另起一个纯格式提交，别混进语义改动里。
+ *
+ * ⚠️ 这里**刻意不写"几个文件没格式化"** —— 那类计数会随文件增删、deno 版本变化而腐烂，
+ * 而没人会重测。要知道当下是多少，跑 `deno fmt --check supabase/functions/`。
  */
 serve(handler);
