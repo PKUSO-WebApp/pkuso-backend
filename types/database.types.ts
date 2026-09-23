@@ -777,6 +777,7 @@ export type Database = {
           file_name: string
           file_size: number | null
           id: string
+          instrument: string | null
           page_count: number | null
           part_id: string | null
           storage_path: string
@@ -787,6 +788,7 @@ export type Database = {
           file_name: string
           file_size?: number | null
           id?: string
+          instrument?: string | null
           page_count?: number | null
           part_id?: string | null
           storage_path: string
@@ -797,6 +799,7 @@ export type Database = {
           file_name?: string
           file_size?: number | null
           id?: string
+          instrument?: string | null
           page_count?: number | null
           part_id?: string | null
           storage_path?: string
@@ -830,21 +833,24 @@ export type Database = {
         Row: {
           created_at: string | null
           id: string
-          instrument: string
+          instrument: string | null
+          section: string | null
           sheet_music_id: string | null
           sort_order: number | null
         }
         Insert: {
           created_at?: string | null
           id?: string
-          instrument: string
+          instrument?: string | null
+          section?: string | null
           sheet_music_id?: string | null
           sort_order?: number | null
         }
         Update: {
           created_at?: string | null
           id?: string
-          instrument?: string
+          instrument?: string | null
+          section?: string | null
           sheet_music_id?: string | null
           sort_order?: number | null
         }
