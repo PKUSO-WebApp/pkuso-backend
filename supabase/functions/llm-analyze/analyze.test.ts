@@ -635,6 +635,61 @@ Deno.test("abstain 形态符合契约", () => {
     instrument: "",
     subParts: [],
     evidence: "",
+    // 总谱标记是**契约的一部分**（前端按它写 `sectionEdit = 总谱`），所以弃权形态里
+    // 也必须显式为 false —— 这个「逐字比整个形状」的用例正是为了逼出这类静默新增
+    isFullScore: false,
     abstainReason: "x",
   }, "弃权形态");
+});
+
+// —— 总谱（pkuso-web#297）——
+// 这一组里最要紧的是**顺序**：`isFullScore` 必须在「空乐器 → 弃权」之前判，
+// 否则模型的正确回答会被当成「答不出来」丢掉，总谱永远判不出来。
+
+Deno.test("总谱：isFullScore=true + 没有单一乐器 → 判总谱，而不是弃权", () => {
+  const a = buildAnalysis(
+    {
+      isFullScore: true,
+      instrument: "总谱",
+      section: "其他",
+      evidence: "Flauto, Oboe, Clarinetto, Corno",
+    },
+    "Flauto, Oboe, Clarinetto, Corno",
+  );
+  eq(a.isFullScore, true, "判成总谱");
+  eq(a.section, "总谱", "声部写成总谱");
+  eq(a.instrument, "总谱", "乐器名给总谱");
+  eq(a.subParts, [], "总谱没有分声部号");
+  eq(a.abstainReason, undefined, "不是弃权");
+});
+
+Deno.test("总谱也要有证据：引不出原文就弃权（不许靠猜）", () => {
+  const a = buildAnalysis(
+    { isFullScore: true, instrument: "总谱", evidence: "这一页有好多乐器" },
+    "Flauto, Oboe",
+  );
+  eq(a.isFullScore, false, "弃权形态");
+  eq(a.instrument, "", "没有乐器");
+  eq(a.abstainReason, "evidence-not-in-source", "证据不在原文里");
+});
+
+Deno.test("只有恰好 true 才算总谱：字符串/数字/缺字段一律按分谱走", () => {
+  for (const bad of ["true", 1, undefined, null]) {
+    const a = buildAnalysis(
+      { instrument: "圆号", section: "圆号", evidence: "Corno", isFullScore: bad },
+      "Corno",
+    );
+    eq(a.isFullScore, false, `坏值 ${JSON.stringify(bad)} 不该判成总谱`);
+    eq(a.instrument, "圆号", "乐器名不受影响");
+    eq(a.section, "圆号", "声部不受影响");
+  }
+});
+
+Deno.test("分谱一字不变：isFullScore=false 时结果与没有这个字段一模一样", () => {
+  const withField = buildAnalysis(
+    { instrument: "圆号", section: "圆号", evidence: "Corno", isFullScore: false },
+    "Corno",
+  );
+  const without = buildAnalysis({ instrument: "圆号", section: "圆号", evidence: "Corno" }, "Corno");
+  eq(withField, without, "分谱路径一字不变");
 });

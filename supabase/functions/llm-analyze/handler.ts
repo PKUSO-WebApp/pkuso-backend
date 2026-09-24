@@ -66,7 +66,18 @@ ${SECTION_LIST}
 这些都判断不出来时，用「其他」。
 
 只返回一个 JSON 对象，不要任何解释文字：
-{"section": "声部", "instrument": "中文乐器名", "subParts": [数字...], "evidence": "原文片段"}
+{"section": "声部", "instrument": "中文乐器名", "subParts": [数字...], "evidence": "原文片段", "isFullScore": false}
+
+规则：
+0. **先判它是不是「总谱」**（isFullScore）：总谱 = **一页上并列着多个乐器**（多行谱表、
+   每行一个乐器名，如 Flauto / Oboe / Clarinetto / Corno 同时出现）。
+   - 是总谱 → "isFullScore": true，此时 instrument 给「总谱」、section 给「其他」、
+     subParts 给 []，evidence 抄那串乐器名里的一小段。
+   - 不是（只有**一件**乐器，哪怕它出现了很多次）→ "isFullScore": false，照下面的规则填。
+   ⚠️ 判据是**这一页的版式**，不是找词：不要因为「出现了乐器名」就判总谱 ——
+   分谱的每一页页眉都印着乐器名。看的是**同一页上有没有多个不同的乐器**。
+   ⚠️ 语言的写法千差万别（俄/德/意/法/英混排），**按音乐常识判断**，
+   不要依赖某个语言的拼写。
 
 规则：
 1. instrument 用**中文里这件乐器的标准叫法**（乐手会这么说的名字），不要逐词直译。
