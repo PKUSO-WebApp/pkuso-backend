@@ -37,6 +37,15 @@ export const SECTIONS = [
 const OTHER_SECTION = "其他";
 
 /**
+ * 总谱：**不是声部**，而是「整份谱（所有声部都在里面）」的标记。
+ *
+ * 与 pkuso-web 的 `FULL_SCORE_SECTION` 是同一份契约（那边用它做详情页排序与
+ * 「总谱不参与切分检测」的人工标记）。放这里是因为**后端要能主动判出它** ——
+ * 人工标记那条路要等分段跑完才做得出来，那时 OCR 早烧完了（见 pkuso-web#297）。
+ */
+export const FULL_SCORE_SECTION = "总谱";
+
+/**
  * section 的合法取值 = 16 声部 + 「其他」。
  *
  * 「其他」必须算**合法**：prompt 明确让模型「判断不出来时用其他」，那是正常弃权路径，
@@ -235,6 +244,14 @@ export interface Analysis {
   subPartsRaw?: string;
   /** 弃权原因，仅在 instrument 为空串时出现 */
   abstainReason?: string;
+  /**
+   * 这一页是不是**总谱**（多个乐器并列、多行谱表）。
+   *
+   * **必须在「空乐器 → 弃权」之前判定**：没有任何单一乐器**正是总谱的特征**，
+   * 按原有顺序走，模型的正确回答会被 `abstain("empty-instrument")` 当成「答不出来」丢掉 ——
+   * 总谱就永远判不出来（这是本轮实现里最容易写错的一处）。
+   */
+  isFullScore: boolean;
 }
 
 /**
@@ -418,6 +435,7 @@ export function abstain(reason: string, sectionRaw?: string): Analysis {
     instrument: "",
     subParts: [],
     evidence: "",
+    isFullScore: false,
     abstainReason: reason,
     ...(sectionRaw ? { sectionRaw } : {}),
   };
@@ -438,6 +456,27 @@ export function buildAnalysis(parsed: unknown, source: unknown): Analysis {
   const instrument = typeof record.instrument === "string" ? record.instrument.trim() : "";
   const evidence = typeof record.evidence === "string" ? record.evidence.trim() : "";
   const { section, sectionRaw } = normalizeSection(record.section);
+  // 只有**恰好 `true`** 才算：`"true"` / `1` / 缺字段一律按「不是总谱」——
+  // 总谱会改写落库的声部与分声部号，宁可漏判（用户还能人工标），不可误判。
+  const isFullScore = record.isFullScore === true;
+
+  // ⚠️ **总谱必须在下面那条「空乐器 → 弃权」之前判**：没有单一乐器正是总谱的特征。
+  // 证据仍要验（与防「编一个乐器名」同一条理由）：总谱那一页可引的是一串乐器名，
+  // 引不出来就是模型在猜 —— 弃权，交给人工标。
+  if (isFullScore) {
+    if (typeof source !== "string") return abstain("bad-source", sectionRaw);
+    if (!evidence) return abstain("no-evidence", sectionRaw);
+    if (!evidenceSupports(evidence, source)) return abstain("evidence-not-in-source", sectionRaw);
+    return {
+      section: FULL_SCORE_SECTION,
+      // 乐器名给「总谱」而不是空串：前端据此生成文件名「总谱.pdf」，且不会被
+      // 「未识别出乐器」那道拦截挡下（总谱本来就没有单一乐器可填）
+      instrument: FULL_SCORE_SECTION,
+      subParts: [],
+      evidence,
+      isFullScore: true,
+    };
+  }
 
   // 模型自己弃权了
   if (!instrument) return abstain("empty-instrument", sectionRaw);
@@ -506,6 +545,7 @@ export function buildAnalysis(parsed: unknown, source: unknown): Analysis {
     instrument,
     subParts,
     evidence,
+    isFullScore: false,
     ...(sectionRaw ? { sectionRaw } : {}),
     ...(subPartsRaw ? { subPartsRaw } : {}),
   };
