@@ -882,27 +882,117 @@ Deno.test("弃权只剩形状类：语义类的都不再弃权", () => {
   // 反向：真正「响应不可用」的仍然弃权（这些是形状，不是语义）
   eq(buildAnalysis({ section: "打击乐", instrument: "", subParts: [], evidence: "x" }, SOURCE).abstainReason, "empty-instrument", "空乐器名照旧弃权");
   eq(buildAnalysis({ section: "打击乐", instrument: "a".repeat(200), subParts: [], evidence: "x" }, SOURCE).abstainReason, "instrument-too-long", "超长照旧弃权");
-  // ⚠️ 下面这组**两个分支都要覆盖**：`\.\.` 一支与 `\p{Cc}`/`\p{Cf}` 一支。
-  // 2026-09-25 重写测试时曾只剩 `../etc/passwd` 一条 —— 于是把 `/\p{Cc}|\p{Cf}/` 整支
-  // 删掉也全绿（对抗测试实测）。NUL 会让整行 insert 失败，而对象已经传上去了 → 孤儿对象。
-  for (const bad of ["../etc/passwd", "x/../../y", "长笛\u{0}", "a\u{1f}b", "长笛\u{200b}"]) {
-    eq(
-      buildAnalysis({ section: "打击乐", instrument: bad, subParts: [], evidence: "x" }, SOURCE).abstainReason,
-      "instrument-illegal-chars",
-      `非法字符照旧弃权：${JSON.stringify(bad)}`,
-    );
-  }
-  // NFKC 折叠后才出现的 `..`：`．.`（全角点 + 半角点）折完就是 `..`，字面正则挡不住
-  for (const folded of ["．.", ".．", "．．"]) {
-    eq(
-      buildAnalysis({ section: "打击乐", instrument: folded, subParts: [], evidence: "x" }, SOURCE).abstainReason,
-      "instrument-illegal-chars",
-      `NFKC 折叠后才成 .. 的写法：${JSON.stringify(folded)}`,
-    );
-  }
+  // 字符判据那一组搬到了下面独立的 `Deno.test`（向量表与 pkuso-web 逐字同一份）。
   // 长度上界**数码点**（星光平面字符占 2 个码元，用 .length 会让上界凭空减半）
   const astral = "𠀀";
   eq([...astral.repeat(64)].length, 64, "对照组：64 个码点");
   eq(buildAnalysis({ section: "打击乐", instrument: astral.repeat(64), subParts: [], evidence: "x" }, SOURCE).abstainReason, undefined, "64 个码点放行");
   eq(buildAnalysis({ section: "打击乐", instrument: astral.repeat(65), subParts: [], evidence: "x" }, SOURCE).abstainReason, "instrument-too-long", "65 个码点弃权");
 });
+
+/**
+ * ⚠️ **下面两张表与 pkuso-web 的同名测试是同一份**
+ * （`src/app/admin/sheet-music/unsafe-name.test.ts`，搜 `UNSAFE_VECTORS` 定位）。
+ * 两仓各判各的（这里判模型给的值、前端判用户手输的那一份），而两仓之间**没有任何机制
+ * 能发现漂移**，表是唯一能把「同一件事」钉在两处的东西 —— 改一边必须改两边，
+ * **加向量也要两边一起加**。
+ *
+ * ⚠️ **表里那些看不见的字符一律写成转义**（`\u00a0` 而不是那个字符本身）：它们在编辑器里
+ * 是空白的，写成字面量的话，读的人和 diff 都分不出改的是哪一条（可见的全角字符仍是
+ * 字面量 —— 那是内容本身，不是看不见的东西）。
+ *
+ * 表要同时满足两件事：**每一支都有独有的捕获者**（正则里删掉任何一支，都必须有向量
+ * 当场变红），且**每一条都是真会走到的输入**（判据的调用方在判之前会 `.trim()`，所以
+ * 空白类字符一律得写成夹在名字中间的样子 —— 两端的那种到不了这里）。
+ * （前一条不是凑覆盖率 —— 2026-09-25 重写测试时曾只剩 `../etc/passwd` 一条，
+ * 于是把 `\p{Cc}|\p{Cf}` 整支删掉也全绿，那是对抗测试实测出来的。）
+ */
+const UNSAFE_VECTORS: Array<[string, string]> = [
+  // —— `\.\.`
+  ["..", "两个点"],
+  ["../etc/passwd", "路径上跳"],
+  ["x/../../y", "藏在中间的 .."],
+  ["．.", "NFKC 折叠后才成 ..（全角点 + 半角点）"],
+  ["．．", "两个全角点"],
+  // —— `\p{Cc}` / `\p{Cf}` / `\p{Cs}`
+  ["长笛\u0000", "NUL：整行 insert 会失败，而对象已经传上去了 → 桶里一个孤儿对象"],
+  ["a\u001fb", "C0 控制字符"],
+  ["长笛\n圆号", "换行"],
+  ["长笛\u200b", "零宽空格（Cf）：肉眼同名"],
+  ["\ud800", "孤立代理（Cs）：UTF-8 里编不出来，Postgres 收不下"],
+  // —— `\p{Default_Ignorable_Code_Point}`：类别是 `Lo`/`Mn`，上面几支**够不着**，
+  //    而渲染出来是空白（后端 `BLANK_LETTERS` 认得的几个都落在这一族里）
+  ["F调\u3164圆号", "韩文填充符：夹在名字中间，肉眼看不出来"],
+  ["\u3164", "整个名字就是它 —— `isBlankName` 也拦不住（它只剥 Cf/Cc）"],
+  ["F调\ufe0f圆号", "变体选择符"],
+  // —— `\u2800` / `\ufffc`：**属性圈不到、只能点名收**的两个
+  ["\u2800", "盲文空格：类别是 `So`，任何属性都圈不到它，只能点名"],
+  ["\ufffc", "对象替换符：粘贴带嵌入对象的富文本时会带上它"],
+  // —— `\p{Cf}` 里**不在** DICP 的那些（U+0600-0605 / U+FFF9-FFFB / U+13430-1343F…）：
+  //    上面那一支接不住它们，删掉 `\p{Cf}` 就会静默漏出这一族
+  ["长笛\ufff9", "行间注释锚：只有 `\\p{Cf}` 拦得住"],
+  // —— `(?![ ])\p{Zs}`：非空格 Zs 里**除 U+1680 外**只有判 raw 才拦得住（NFKC 都折成普通空格）
+  ["F调\u00a0圆号", "NBSP：肉眼与普通空格同形"],
+  ["F调\u3000圆号", "全角空格：中文输入法全角模式下很好敲出来"],
+  ["F调\u1680圆号", "欧甘空格：Zs 里唯一一个 NFKC 不动它的"],
+  // —— `\p{Zl}` / `\p{Zp}`：NFKC 不动它们
+  ["F调\u2028圆号", "行分隔符"],
+  ["F调\u2029圆号", "段分隔符"],
+  // —— Windows 文件名里非法的字符（全角写法折叠后才现形）
+  ["Horn\\2", "反斜杠：Windows 上的路径分隔符"],
+  ["长笛*", "星号"],
+  ["长笛?", "问号"],
+  ['长笛"solo"', "双引号"],
+  ["长笛<x>", "尖括号"],
+  ["长笛|1", "竖线"],
+  ["圆号:1", "冒号：NTFS 上会写进备用数据流"],
+  ["圆号：1", "全角冒号：NFKC 折成 :"],
+  ["圆号＊", "全角星号：NFKC 折成 *"],
+];
+
+/**
+ * 放行的对照组，与上面的表**同等重要** —— 判据是「拦下」，多拦一个就多一次**弃权**，
+ * 而弃权会把多页文件推进分段（按页烧 OCR）＝ 白花钱买一个更差的体验。
+ */
+const SAFE_VECTORS: Array<[string, string]> = [
+  ["圆号", "普通乐器名"],
+  ["Bass Clarinet", "普通空格合法（钉住别把 `\\p{Zs}` 整支收进来）"],
+  ["木琴/钟琴", "#12 允许的合称（`/` 刻意放行）"],
+  ["Ｆ调圆号", "全角字母：NFKC 折成常规形式后合法"],
+  ["圆号1,2", "分声部号"],
+  ["Oboe 1-2", "连字符"],
+  ["圆号.", "结尾的点：值放行（文件名是 `圆号..pdf`，已不在路径段的边界上）"],
+];
+
+/** 标题里那些字符要写成码位 —— 不然读的人分不清是哪一条 */
+const invisibleInTitle = /[\p{C}\p{Z}\p{Default_Ignorable_Code_Point}\u2800\ufffc]/u;
+
+/** 一个码点写成 `\\u{XXXX}`（表里的转义写法，看得出是哪一个） */
+const codePointLabel = (c: string) => `\\u{${c.codePointAt(0)!.toString(16).toUpperCase()}}`;
+
+function show(s: string): string {
+  let out = "";
+  for (const c of s) out += invisibleInTitle.test(c) && c !== " " ? codePointLabel(c) : c;
+  return out;
+}
+
+Deno.test("乐器名的字符判据：与 pkuso-web 同一份向量表", () => {
+  const asInstrument = (instrument: string) =>
+    buildAnalysis({ section: "打击乐", instrument, subParts: [], evidence: "x" }, SOURCE);
+  for (const [raw, why] of UNSAFE_VECTORS) {
+    eq(asInstrument(raw).abstainReason, "instrument-illegal-chars", `必须弃权：${show(raw)} —— ${why}`);
+  }
+  for (const [raw, why] of SAFE_VECTORS) {
+    eq(asInstrument(raw).abstainReason, undefined, `必须放行：${show(raw)} —— ${why}`);
+  }
+});
+
+Deno.test("show：用例标题里的转义（只服务失败信息，不涉生产行为）", () => {
+  // 这一份只用在 `必须弃权：${show(raw)}` 这类失败信息里 —— 漏转义不会让任何判据失效，
+  // 只会让报错里出现一个空白字符、读的人分不清是哪一条（前端那一份有同款测试）。
+  for (const cp of [0x3164, 0xfe0f, 0x2800, 0xfffc, 0x0007, 0x2007]) {
+    const label = show(String.fromCharCode(cp));
+    eq(label.includes("\\u{"), true, "U+" + cp.toString(16).toUpperCase() + " 没被转义：" + label);
+  }
+});
+
