@@ -1,7 +1,17 @@
 import { handler, retry } from "./handler.ts";
 
 // 把退避压到 1ms：真等 1s/2s/4s 会让整套用例跑 40 秒以上，没人愿意跑就等于没有保护。
+// ⚠️ 光调小基数**不够**（2026-09-25）：退避要**被观测到**才能断言，而过去是靠桩里记
+// `Date.now()` 差值。本文件那条用例的注释自己就记着「实测踩过：backoffs 量到 [3,2,4]」，
+// 当时的应对是把基数从 1ms 抬到 20ms —— 那是**缓解不是解决**，负载一上来照样颠倒，
+// 而它一红就会让**变异验证读错图**（一红就以为变异被抓住了）。
+// 现在把 `sleep` 整个换掉：**只记录被请求的毫秒数、立刻 resolve**，断言变成纯值比较。
 retry.baseDelayMs = 1;
+let delays: number[] = [];
+retry.sleep = (ms: number) => {
+  delays.push(ms);
+  return Promise.resolve();
+};
 
 /**
  * 跑法：deno test --allow-env supabase/functions/segment-parts/
@@ -33,8 +43,6 @@ const PAGES = [
 ];
 
 let calls = 0;
-let backoffs: number[] = [];
-let lastAt = 0;
 /** 最近一次上游请求里的 prompt 正文 —— 用来断言 prompt 的判据没被改掉 */
 let lastPrompt = "";
 let respond: (call: number) => Response | Promise<Response> = () =>
@@ -51,9 +59,6 @@ globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
   } catch {
     lastPrompt = "";
   }
-  const now = Date.now();
-  if (lastAt) backoffs.push(now - lastAt);
-  lastAt = now;
   // 每次上游请求都必须带超时信号，否则一条挂住的连接会吃光整个预算。
   // 放在桩里 = **每条用例都会走到**：将来谁把 signal 去掉，这里立刻红。
   if (!(init?.signal instanceof AbortSignal)) {
@@ -65,8 +70,7 @@ globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
 const reset = (fn: typeof respond) => {
   respond = fn;
   calls = 0;
-  backoffs = [];
-  lastAt = 0;
+  delays = [];
   lastPrompt = "";
 };
 
@@ -191,25 +195,18 @@ Deno.test("单页文本超长会被截断，不会把 prompt 撑爆", async () =
 });
 
 Deno.test("fetch 抛异常也要重试到底（网络故障是最该重试的一类）", async () => {
-  // ⚠️ 本用例把退避基数临时调大：默认的 1ms 下三次退避是 1/2/4ms，而 `Date.now()`
-  // 只有 1ms 分辨率、`setTimeout` 本身也有抖动 —— 「递增」这个断言会被抖动颠倒
-  // （实测踩过：backoffs 量到 [3,2,4]）。20ms 起步后抖动相对于间隔可以忽略。
-  const base = retry.baseDelayMs;
-  retry.baseDelayMs = 20;
-  try {
-    reset(() => {
-      throw new TypeError("connection reset by peer");
-    });
-    const res = await post({ pages: PAGES, pageCount: 4 });
-    const j = await res.json();
-    eq(calls, 4, "重试次数");
-    eq(backoffs.length, 3, "两次重试之间都要退避");
-    eq(backoffs[1] > backoffs[0] && backoffs[2] > backoffs[1], true, "退避应递增");
-    eq(/after 4 attempt/.test(j.error), true, "报文要带真实次数");
-    eq(/connection reset/.test(j.error), true, "报文要含上游错误");
-  } finally {
-    retry.baseDelayMs = base;
-  }
+  // ⚠️ 本用例过去把退避基数临时调大到 20ms，好让 `Date.now()` 量出来的差值不被抖动
+  // 颠倒（注释里记着实测量到过 [3,2,4]）—— 那是**缓解**。现在 `retry.sleep` 被换成了
+  // 「记录毫秒数 + 立刻 resolve」，量的是**请求值**：base=1 → [1, 2, 4]，逐位相等。
+  reset(() => {
+    throw new TypeError("connection reset by peer");
+  });
+  const res = await post({ pages: PAGES, pageCount: 4 });
+  const j = await res.json();
+  eq(calls, 4, "重试次数");
+  eq(delays, [1, 2, 4], "退避应按 base × 2^n 递增");
+  eq(/after 4 attempt/.test(j.error), true, "报文要带真实次数");
+  eq(/connection reset/.test(j.error), true, "报文要含上游错误");
 });
 
 Deno.test("可重试的状态码：429 / 5xx 打满四次", async () => {
