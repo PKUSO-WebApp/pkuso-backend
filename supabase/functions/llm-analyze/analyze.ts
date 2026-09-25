@@ -138,21 +138,54 @@ const MIN_EVIDENCE_CHARS = 2;
 const MAX_INSTRUMENT_CHARS = 64;
 
 /**
- * 乐器名里绝对不能出现的字符。
+ * 乐器名里绝对不能让文件名 / 库值出现的东西 —— 与 pkuso-web 的 `unsafe-name.ts`
+ * 是**逐字一份**（同一个常量名 `UNSAFE_IN_NAME`，搜它定位，别写行号）。
+ * 两仓各判各的（后端判模型给的值、前端判用户手输的那一份），而两仓之间**没有任何机制
+ * 能发现漂移** —— 改一边必须改另一边，**加一支也要两边一起加**。
  *
- * 与上一条同源：理由从「storage 路径」换成了 `file_name` / DB 列。
- * 乐器名从白名单改成开集之后，模型给的任意串都会流到那两处。`..` 在**下载文件名**
- * 里会变成路径上跳（浏览器与系统保存时对 `/`、`..` 的处理各不相同），
- * 控制字符会破坏文件名与显示。
+ * 理由从「storage 路径」换过一次：存储键是 `{scoreId}/{行 id}.pdf`（uuid），乐器名进不去。
+ * 现在守的是 `file_name`（`F调圆号.pdf`，用户下载时落到自己文件系统上的名字）
+ * 与 `sheet_music_files.instrument` 列。
+ *
+ * 收哪几种只有一条线：**「落不下去」或「落下去之后肉眼分不出来」**。这条线在这一侧
+ * 格外要紧 —— 后端每多拦一种就多一次**弃权**，而弃权会把多页文件推进分段
+ * （`needsSegmentation`，按页烧 OCR），所以「看着可疑」的字符一律不收。
+ * 逐支的理由与前端那份注释一致。其中 `\p{Default_Ignorable_Code_Point}` 一支收的是
+ * **默认不可见的那一整族**（4 千多个码点：韩文填充符、变体选择符…，类别是 `Lo`/`Mn`
+ * 所以 `\p{Cf}` 够不着）—— 它值这一次弃权：放过去就是一个肉眼看着没有名字的乐器名，
+ * 而本文件的 `BLANK_LETTERS`（引文归一化）认得的几个都落在这一族里 —— 它是**子集**，
+ * 不是同一份清单（那段只列了 4 个韩文填充符，不含变体选择符）。
+ * 另有 \u2800 / \ufffc 一支（盲文空格、对象替换符）：它们**不在任何属性集里**，只能逐码点点名 ——
+ * 空白字形是一类**渲染**性质、圈不全，所以这一支是一个**点名清单**，只收了确实会从
+ * 别处粘进来的那两个。
  *
  * **拦下让用户手填，而不是替换字符**：`木琴/钟琴` 这种合称是 #12 允许的写法，
- * 后端没有立场去改写一个用户会看到的乐器名 —— 而 `/` 只是多一层目录，不致命。
+ * 后端没有立场去改写一个用户会看到的乐器名 —— 而 `/` 只是多一个斜杠，不致命。
  *
- * ⚠️ **调用点判的是 NFKC 折叠后的形态**（存的是原始值）：`．.`（全角点 + 半角点）
- * 折完就是 `..`，而这条正则本身是字面匹配、挡不住它。代价是顺带拒掉几个本来无害的
- * 字符（`‥`/`…`/`︙`/`︰` 都会折出点），可接受 —— 那几种写法在乐器名里本来也不该出现。
+ * ⚠️ **判 raw 与 NFKC 折叠后两种形态**（存的是原始值），缺哪一种都会漏 —— 见 `unsafeInName`。
  */
-const ILLEGAL_IN_INSTRUMENT = /\.\.|\p{Cc}|\p{Cf}/u;
+const UNSAFE_IN_NAME =
+  /\.\.|\p{Cc}|\p{Cf}|\p{Cs}|\p{Default_Ignorable_Code_Point}|[\u2800\ufffc]|(?![ ])\p{Zs}|\p{Zl}|\p{Zp}|[\\*?"<>|:]/u;
+
+/**
+ * 两种形态任一命中即算。缺哪一种都会漏：
+ *
+ * - **折叠会造出问题**：`．.`（全角点 + 半角点）折完就是 `..`；`：＊？＜＞｜＂＼` 折完
+ *   是 `:*?<>|"\`。旧版判的就是折叠后那一份，这一半它拦得住。
+ * - **折叠会消掉问题**：非空格 `Zs`（NBSP、全角空格…）的 NFKC **全是普通空格**
+ *   （U+1680 是唯一的例外，它没有兼容分解），而普通空格是合法的。只判折叠后那一份，
+ *   夹在名字当中的它们一个也拦不住 —— 而它们与真正的空格**肉眼完全同形**，
+ *   唯一约束也拦不住（两个值并不相等）。这一半是本次补上的。
+ *
+ * 两端的那类空白到不了这里：调用点拿到的是 `.trim()` 过的值，而 `trim` 按规范会把所有
+ * `Zs` 从两端去掉（`\p{Cf}` 不在它的范围内 —— 零宽空格在两端也留得下来，由 `\p{Cf}` 接住）。
+ *
+ * 代价是顺带拒掉几个本来无害的字符（`‥`/`…`/`︙`/`︰` 都会折出点），可接受 ——
+ * 那几种写法在乐器名里本来也不该出现。
+ */
+function unsafeInName(s: string): boolean {
+  return UNSAFE_IN_NAME.test(s) || UNSAFE_IN_NAME.test(s.normalize("NFKC"));
+}
 
 export interface Analysis {
   section: string;
@@ -263,7 +296,7 @@ export interface Analysis {
  */
 export function evidenceSupports(evidence: string, source: string): boolean {
   const needle = normalizeForMatch(evidence);
-  // 归一化会剥掉一切非字母数字，于是「。」「👨‍👩‍👦」、两个零宽空格（U+200B）
+  // 归一化会剥掉一切非字母数字，于是「。」「👨\u200d👩\u200d👦」、两个零宽空格（U+200B）
   // 这类引文会变成空串或极短串 —— 而空串是任意字符串的子串。
   // 按**码点**数（不是码元）要求至少剩 2 个字符，把这条路堵死。
   // （这里刻意不写出真的零宽字符：它们会被 lint 判为 irregular whitespace，
@@ -563,10 +596,10 @@ export function buildAnalysis(parsed: unknown, source: unknown, fileName?: unkno
   // 模型自己弃权了
   if (!instrument) return abstain("empty-instrument", sectionRaw);
   if ([...instrument].length > MAX_INSTRUMENT_CHARS) return abstain("instrument-too-long", sectionRaw);
-  // ⚠️ 拿 **NFKC 折叠后**的形态去判 `..`：`．.`（全角点 + 半角点）折完就是 `..`，
-  // 而这条正则是字面匹配、挡不住它。**判折叠后的形态、存原始的** —— 乐器名本身的
-  // 全角/兼容字符是模型给的原文，不该被我们改写。
-  if (ILLEGAL_IN_INSTRUMENT.test(instrument.normalize("NFKC"))) {
+  // ⚠️ **判 raw 与折叠后两种形态、存原始的** —— 乐器名本身的全角/兼容字符是模型给的原文，
+  // 不该被我们改写；而两种形态各有对方看不见的东西（`．.` 折叠后才成 `..`，NBSP 折叠后
+  // 反而成了合法的空格），只判一种就一定漏。详见 `unsafeInName`。
+  if (unsafeInName(instrument)) {
     return abstain("instrument-illegal-chars", sectionRaw);
   }
 
