@@ -836,24 +836,21 @@ export type Database = {
         Row: {
           created_at: string | null
           id: string
-          instrument: string | null
-          section: string | null
+          section: string
           sheet_music_id: string | null
           sort_order: number | null
         }
         Insert: {
           created_at?: string | null
           id?: string
-          instrument?: string | null
-          section?: string | null
+          section: string
           sheet_music_id?: string | null
           sort_order?: number | null
         }
         Update: {
           created_at?: string | null
           id?: string
-          instrument?: string | null
-          section?: string | null
+          section?: string
           sheet_music_id?: string | null
           sort_order?: number | null
         }
