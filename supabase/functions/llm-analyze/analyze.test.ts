@@ -2,9 +2,11 @@ import {
   abstain,
   buildAnalysis,
   evidenceSupports,
+  MAX_EXTRA_SECTIONS,
   MAX_SUB_PARTS,
   normalizeForMatch,
   normalizeSection,
+  parseExtraSections,
   parseSubParts,
   SECTIONS,
 } from "./analyze.ts";
@@ -66,30 +68,11 @@ Deno.test("弃权：乐器名为空串", () => {
   eq(r.abstainReason, "empty-instrument", "原因");
 });
 
-Deno.test("弃权：「答不出来」的各种说法都不是乐器名", () => {
-  // 防的是 #12「背景 2」那个失败模式：放过去会建出名叫「无法判断」的声部
-  // 与「无法判断.pdf」。这是**一类**输入而不是几个字面量 ——
-  // 精确匹配（无/其他这种太短的词）+ 词根包含（模型会把词拼长）两个机制合起来兜。
-  // 旧版的 "unknown" 哨兵就是被 temperature=0 的硬选行为吃掉的。
-  const bad = [
-    // 英文
-    "unknown", "UNDEFINED", "null", "NaN", "nil", "None", "n/a", "N.A.",
-    // 只有归一化之后才能命中的变体（全角 / 标点 / 空格 / 大小写）
-    "ＵＮＫＮＯＷＮ", "Unknown.", "u n k n o w n", "N / A",
-    // 中文：模型的高频弃权说法
-    "无法判断", "无法识别", "不能识别", "未识别", "未识别到", "未知", "不明",
-    "不确定", "待定", "不详", "没有", "无", "其他", "略",
-    "判断不出来", "识别不出", "答不出来",
-  ];
-  for (const name of bad) {
-    const r = buildAnalysis({ section: "圆号", instrument: name, evidence: "Corno" }, "Corno");
-    eq(r.instrument, "", `「${name}」应弃权`);
-    eq(r.abstainReason, "non-answer", `「${name}」原因`);
-  }
-});
-
-Deno.test("非答案黑名单不误杀真实乐器名", () => {
-  // 词根用的是「包含」匹配，这条确认它没把真名吃掉。
+Deno.test("真实乐器名一律原样采用（现在没有任何词表会拦它）", () => {
+  // 这条原先钉的是「非答案黑名单别误杀真名」。黑名单已随词表一起删掉（2026-09-25，
+  // 用户定：词表不能作为分析的直接手段），但**这组输入仍然值得留着** ——
+  // 它现在钉的是「模型说什么就是什么」：只要不是空串，乐器名原样落库。
+  // ⚠️ 别因为它「没有对应实现了」就删掉：它是「不再有任何东西判断乐器名」的正面证据。
   const real = [
     "中提琴", "大提琴", "低音提琴", "长笛", "短笛", "双簧管", "英国管",
     "单簧管", "低音单簧管", "大管", "低音大管", "萨克斯", "圆号", "小号", "长号",
@@ -105,29 +88,14 @@ Deno.test("非答案黑名单不误杀真实乐器名", () => {
     );
     eq(r.instrument, name, `「${name}」被误杀`);
   }
-  // 「小提琴」单独测：它在「其他 + 空分声部」下**应当**被 ambiguous-violin 兜底
-  // 拦下（那正是两支会分辨不出来的情形），所以要给一个正常的声部与序号。
+  // 「小提琴」单独测：给它一个**正常的声部与序号** —— 这样它走的是「答案原样采用」
+  // 那条路。（旧版这里是为了避开一道 `ambiguous-violin` 弃权，那道弃权已删。）
   const v = buildAnalysis(
     { section: "中提琴", instrument: "小提琴", subParts: [1], evidence: "Campanelli e Silofono" },
     SOURCE,
   );
   eq(v.instrument, "小提琴", "有分声部号时不该被误杀");
   eq(v.subParts, [1], "分声部号");
-});
-
-Deno.test("弃权：没有 evidence", () => {
-  const r = buildAnalysis({ section: "圆号", instrument: "圆号", subParts: [2] }, SOURCE);
-  eq(r.instrument, "", "instrument");
-  eq(r.abstainReason, "no-evidence", "原因");
-});
-
-Deno.test("弃权：evidence 不在原文里（模型在编）", () => {
-  const r = buildAnalysis(
-    { section: "大管", instrument: "大管", subParts: [1], evidence: "Fagotto I" },
-    SOURCE,
-  );
-  eq(r.instrument, "", "instrument");
-  eq(r.abstainReason, "evidence-not-in-source", "原因");
 });
 
 Deno.test("evidence：下划线/空格/连字符/全角/大小写差异仍算命中", () => {
@@ -227,25 +195,6 @@ Deno.test("section 前后空白被 trim 掉，不产生假漂移告警", () => {
   }
 });
 
-Deno.test("乐器名含路径穿越/控制字符时弃权（旧前端拿它当目录名）", () => {
-  // 注：纯标点（如 ".."）会更早地被 isNonAnswer 判为「归一化后为空」而弃权，
-  // 落到 non-answer 而非这里 —— 结论一样（都弃权），只是原因不同。
-  for (const name of ["../../etc/passwd", "长笛\u0000", "a\u001Fb", "x/../../y"]) {
-    const r = buildAnalysis(
-      { section: "其他", instrument: name, evidence: "Campanelli e Silofono" },
-      SOURCE,
-    );
-    eq(r.instrument, "", `「${JSON.stringify(name)}」应弃权`);
-    eq(r.abstainReason, "instrument-illegal-chars", `「${JSON.stringify(name)}」原因`);
-  }
-  // 合称里的 `/` 是 #12 允许的写法，只多一层目录，不拦
-  const ok = buildAnalysis(
-    { section: "打击乐", instrument: "木琴/钟琴", evidence: "Campanelli e Silofono" },
-    SOURCE,
-  );
-  eq(ok.instrument, "木琴/钟琴", "合称应放行");
-});
-
 Deno.test("小提琴：模型给不出号时，序号由声部推导兜底", () => {
   // 兜底路径：模型给 []，或给了非法写法（罗马/中文数字 → 解析成 []）。
   // ⚠️ 这条兜底今天是「文件名自解释」的优化，不再是承重结构：
@@ -283,66 +232,10 @@ Deno.test("小提琴：模型给了合法号就**采信模型**，不被声部�
   }
 });
 
-Deno.test("小提琴：声部落闭集外且没有分声部号时宁可弃权", () => {
-  // 这是第二轮审查打出来的洞：`VIOLIN_SUB_PART` 按 section 取值，section 一旦
-  // 不守词表（`Violin I` / `小提琴`）就没有依据了，只能靠模型给的分声部号。
-  // 两支小提琴的 instrument 名相同，序号一缺就分辨不出来 —— 宁可不识别让用户手填。
-  // 必须同时覆盖**闭集内**的声部：`sectionRaw` 只在闭集外才出现，而「其他」是
-  // 闭集内的合法值、又正是 prompt 规则 3 指定的退路 —— 只测闭集外会把最常见的那条
-  // 路漏掉（第三轮对抗就是这样打穿的）。
-  for (const rawSection of [
-    "Violin I", "小提琴", "弦乐", "Violini", // 闭集外
-    "其他", "中提琴", "大提琴", "打击乐", "键盘", // 闭集内
-  ]) {
-    const r = buildAnalysis(
-      { section: rawSection, instrument: "小提琴", subParts: [], evidence: "Violino" },
-      "Violino",
-    );
-    eq(r.instrument, "", `声部「${rawSection}」应弃权`);
-    eq(r.abstainReason, "ambiguous-violin", `声部「${rawSection}」原因`);
-  }
-  // 外文与全角写法也要被认出来 —— 匹配前过了 normalizeForMatch，
-  // 所以全角/大小写/标点都归到同一形式；重音字母 NFKC 不折叠，单独列出。
-  for (const name of ["Violin", "Ｖｉｏｌｉｎ", "violín", "VIOLON", "Скрипка", "violino"]) {
-    const r = buildAnalysis(
-      { section: "其他", instrument: name, subParts: [], evidence: "Violino" },
-      "Violino",
-    );
-    eq(r.instrument, "", `instrument=${name} 也应弃权`);
-    eq(r.abstainReason, "ambiguous-violin", `instrument=${name} 原因`);
-  }
-  // 反向：这些**不该**被认成小提琴（否则会误伤）
-  for (const name of ["中提琴", "大提琴", "低音提琴", "Viola", "Violoncello", "大管"]) {
-    const r = buildAnalysis(
-      { section: "弦乐", instrument: name, subParts: [], evidence: "Allegretto" },
-      SOURCE,
-    );
-    eq(r.instrument, name, `「${name}」不该被小提琴兜底误伤`);
-  }
-});
-
-Deno.test("小提琴兜底：声部落闭集外但模型给了**合法**分声部号时不弃权", () => {
-  // prompt 已要求小提琴照给分声部号；给了合法的就不必弃权。
-  for (const [given, want] of [[[1], [1]], [[2], [2]], ["1", [1]]] as const) {
-    const r = buildAnalysis(
-      { section: "Violin I", instrument: "小提琴", subParts: given, evidence: "Violino" },
-      "Violino",
-    );
-    eq(r.instrument, "小提琴", `subParts=${JSON.stringify(given)} 不该弃权`);
-    eq(r.subParts, want, `subParts=${JSON.stringify(given)}`);
-  }
-  // ⚠️ 契约收紧后**罗马数字不再算数**：这一条以前是放行的（`"II"` → 2），
-  // 现在唯一合法格式是阿拉伯数字，所以它落进「没有分声部号」那一支，应当弃权。
-  const roman = buildAnalysis(
-    { section: "Violin I", instrument: "小提琴", subParts: "II", evidence: "Violino" },
-    "Violino",
-  );
-  eq(roman.instrument, "", "罗马数字不再被接受");
-  eq(roman.abstainReason, "ambiguous-violin", "原因");
-});
-
-Deno.test("小提琴兜底不误伤中提琴/大提琴/低音提琴", () => {
-  // 判据是「乐器名里含『小提琴』」—— 这三个都不含，即使声部落闭集外也不该弃权。
+Deno.test("中提琴/大提琴/低音提琴没有分声部号也照用", () => {
+  // ⚠️ 这条用例原先叫「小提琴兜底不误伤…」，钉的是一条正则（`VIOLIN_LIKE`，已删）。
+  // 现在代码**根本不看乐器名**，这三个名字通过是必然的 —— 它守的是另一件事：
+  // 「没有号」不是弃权理由（旧版会因 `ambiguous-violin` 弃权，现在不会）。
   for (const name of ["中提琴", "大提琴", "低音提琴"]) {
     const r = buildAnalysis(
       { section: "弦乐", instrument: name, subParts: [], evidence: "Allegretto" },
@@ -352,7 +245,7 @@ Deno.test("小提琴兜底不误伤中提琴/大提琴/低音提琴", () => {
   }
 });
 
-Deno.test("乐器名过长时弃权（旧前端拿它当存储路径的目录名）", () => {
+Deno.test("乐器名过长时弃权（它会写进 file_name 与 sheet_music_files.instrument）", () => {
   const r = buildAnalysis(
     { section: "其他", instrument: "木".repeat(65), evidence: "Campanelli e Silofono" },
     SOURCE,
@@ -522,40 +415,28 @@ Deno.test("subPartsRaw：给了号却没解析出来时必须**看得见**；说
     buildAnalysis({ section: "圆号", instrument: "F调圆号", subParts, evidence: "Horn_1-4" }, "Horn_1-4");
 
   // 给了但没读懂 —— 用户**需要手填**，所以必须带信号
-  for (const given of ["1-4", "[1,2]", "1,2,3支", Array.from({ length: 33 }, (_, i) => i + 1)]) {
+  for (const given of ["1-4", "[1,2]", "1,2,3支", Array.from({ length: MAX_SUB_PARTS + 1 }, (_, i) => i + 1)]) {
     const r = run(given);
     eq(typeof r.subPartsRaw, "string", `${JSON.stringify(given)} 应带上原文`);
     eq(r.instrument, "F调圆号", "乐器名识别对了，不该连坐走弃权");
   }
   eq(run("1-4").subPartsRaw, "1-4", "原文要原样带出来，界面才能提示用户填什么");
 
-  // 模型说「没有」的各种写法 —— 不该挂告警：否则每条正常返回都带一条，那条信号立刻失去意义
-  for (const given of [[], "", "null", null, undefined]) {
+  // 「没有」的判据是**结构性**的（字段缺失 / null / 空数组 / 空串），不再认自然语言的
+  // 「没有」说法。⚠️ 代价：模型用 `"null"` / `"无"` / `"none"` 作答时会挂一次告警 ——
+  // 这是**有意**的（prompt 规则 8 要求的本来就是数组，那是它没照契约答），
+  // 比加一张永远列不全的用词表更稳。`"null"` 因此挪到上面那组。
+  for (const given of [[], "", null, undefined]) {
     eq(run(given).subPartsRaw, undefined, `${JSON.stringify(given)} 不该带 subPartsRaw`);
     eq(run(given).subParts, [], `${JSON.stringify(given)} 的号就是空数组`);
   }
+  // 自然语言的「没有」会挂告警 —— 有意的取舍，别当成 bug「修」回词表
+  eq(run("null").subPartsRaw, "null", "字面量 null 不是结构性空值，按「给了但没读懂」处理");
+  eq(run("无").subPartsRaw, "无", "自然语言的「没有」同理");
+
   // 解析成功时当然也不带
   eq(run("1,2").subPartsRaw, undefined, "读懂了的字符串不该再挂原文告警");
   eq(run("1,2").subParts, [1, 2], "逗号串要拆成数组");
-});
-
-Deno.test("subPartsRaw：「没有」的判据是黑名单 —— 用词说没有的不报警，怪形态一律报警", () => {
-  const run = (subParts: unknown) =>
-    buildAnalysis({ section: "圆号", instrument: "F调圆号", subParts, evidence: "Horn_1-4" }, "Horn_1-4");
-
-  // 模型用词表达「没有」的常见写法 —— 挂告警就等于每条正常返回都带一条，信号立刻失去意义。
-  // 这些词直接复用 isNonAnswer 的词表（同为「模型在说答不出来」）。
-  for (const given of ["无", "none", "unknown", "N/A", "null", "NULL", "未识别", "[]"]) {
-    eq(run(given).subPartsRaw, undefined, `${given} 是在说「没有」，不该报警`);
-  }
-
-  // 反过来：非「没有」的怪形态**必须报警**。白名单式判据在这里会把它们当成
-  // 「模型说没有」而静默丢弃 —— 号丢了且没有任何信号，正是本字段要消灭的失败模式。
-  // `true` / `{}` 在 response_format: json_object 下完全可达。
-  for (const given of [true, {}, { "1": 1 }, ["x"]]) {
-    const r = run(given);
-    eq(typeof r.subPartsRaw, "string", `${JSON.stringify(given)} 是怪形态，必须报警而不是静默`);
-  }
 });
 
 Deno.test("subPartsRaw 的原文：非有限数与截断都有确定行为", () => {
@@ -638,6 +519,11 @@ Deno.test("abstain 形态符合契约", () => {
     // 总谱标记是**契约的一部分**（前端按它写 `sectionEdit = 总谱`），所以弃权形态里
     // 也必须显式为 false —— 这个「逐字比整个形状」的用例正是为了逼出这类静默新增
     isFullScore: false,
+    // 同样恒存在（不是可选字段）：调用方按「有几个声部要落库」用它，
+    // 缺席与空数组在 `?? []` 之下不可区分，而恒存在就少一个分支。
+    extraSections: [],
+    // 引文能不能在原文里找到 —— 弃权时恒为 false（没有可核对的引文）
+    evidenceFound: false,
     abstainReason: "x",
   }, "弃权形态");
 });
@@ -653,24 +539,25 @@ Deno.test("总谱：isFullScore=true + 没有单一乐器 → 判总谱，而不
       instrument: "总谱",
       section: "其他",
       evidence: "Flauto, Oboe, Clarinetto, Corno",
+      // ⚠️ 下面那条 `evidenceFound === true` 是**唯一**钉住总谱分支这个字段的断言：
+      // 把它改成恒 false / 恒 true，其余用例全绿（2026-09-25 合规审查实测）。
     },
     "Flauto, Oboe, Clarinetto, Corno",
   );
+  eq(a.evidenceFound, true, "总谱分支的 evidenceFound 也要对：引文在原文里");
+  // ⚠️ **两侧都要钉**：只钉 true 的话，把总谱分支写成恒 `true` 仍然全绿
+  //（2026-09-25 第 14 轮合规复查实测），而那个字段正是删除证据弃权门的唯一补偿。
+  const notFound = buildAnalysis(
+    { isFullScore: true, instrument: "总谱", section: "其他", evidence: "原文里没有这句" },
+    "Campanelli e Silofono",
+  );
+  eq(notFound.isFullScore, true, "总谱照判");
+  eq(notFound.evidenceFound, false, "引文不在原文里 → false");
   eq(a.isFullScore, true, "判成总谱");
   eq(a.section, "总谱", "声部写成总谱");
   eq(a.instrument, "总谱", "乐器名给总谱");
   eq(a.subParts, [], "总谱没有分声部号");
   eq(a.abstainReason, undefined, "不是弃权");
-});
-
-Deno.test("总谱也要有证据：引不出原文就弃权（不许靠猜）", () => {
-  const a = buildAnalysis(
-    { isFullScore: true, instrument: "总谱", evidence: "这一页有好多乐器" },
-    "Flauto, Oboe",
-  );
-  eq(a.isFullScore, false, "弃权形态");
-  eq(a.instrument, "", "没有乐器");
-  eq(a.abstainReason, "evidence-not-in-source", "证据不在原文里");
 });
 
 Deno.test("只有恰好 true 才算总谱：字符串/数字/缺字段一律按分谱走", () => {
@@ -685,11 +572,285 @@ Deno.test("只有恰好 true 才算总谱：字符串/数字/缺字段一律按�
   }
 });
 
-Deno.test("分谱一字不变：isFullScore=false 时结果与没有这个字段一模一样", () => {
-  const withField = buildAnalysis(
-    { instrument: "圆号", section: "圆号", evidence: "Corno", isFullScore: false },
-    "Corno",
+Deno.test("总谱证据：**版标词算可靠证据** —— PARTITUR. 直接放行", () => {
+  // 用户 2026-09-25 定的：**一般只有总谱会有封面**，所以封面/标题页上的版次标注
+  // 是**可靠**的总谱信号。早期版本把这一族当「不算证据」挡掉，那是错的 ——
+  // 代价是手上那份真总谱在默认配置下认不出来；而且它被挡之后 `segEligible` 变真，
+  // 整份总谱真去跑分段就是按页数烧 OCR。
+  const a = buildAnalysis(
+    { isFullScore: true, instrument: "总谱", section: "其他", evidence: "PARTITUR." },
+    "PARTITUR.",
   );
-  const without = buildAnalysis({ instrument: "圆号", section: "圆号", evidence: "Corno" }, "Corno");
-  eq(withField, without, "分谱路径一字不变");
+  eq(a.isFullScore, true, "判成总谱");
+  eq(a.instrument, "总谱", "乐器名给总谱");
+  eq(a.abstainReason, undefined, "不是弃权");
+});
+
+Deno.test("extraSections：主声部不是字符串时兜住，不抛", () => {
+  // ⚠️ 这条上一轮被程序化删除误删过（它没引用任何被删机制，属于连带损失）——
+  // 而它钉的正是 `parseExtraSections` 首句的 `typeof primary !== "string"`：
+  // 删掉那一句，`primary.trim()` 会抛，而**导出的函数要自己判形态**
+  // （调用方今天是 `buildAnalysis`、传的恒是字符串，但这个函数是 export 的）。
+  for (const bad of [undefined, null, 123, {}, [], true]) {
+    eq(parseExtraSections(["低音提琴"], bad as unknown as string), [], `primary=${String(bad)}`);
+  }
+});
+
+Deno.test("extraSections：主声部落「其他」时一个额外声部都不收", () => {
+  // 「其他」= 模型说「我认不出这是哪个声部」，而 extraSections 的语义是
+  // 「**除了**主声部，还落到哪几个」—— 主声部没定下来，「除了」就没有立足点。
+  // 不挡的话，一次不确定的判读会往**具体**声部里塞一份文件，而用户在「其他」
+  // 与那个声部两处都会看到它。
+  //
+  // 三条到达「其他」的路径都要覆盖：模型字面写「其他」、写了闭集外的词、字段缺失。
+  for (const raw of [{ section: "其他" }, { section: "Cello" }, {}]) {
+    const a = buildAnalysis(
+      {
+        ...raw,
+        instrument: "大提琴",
+        evidence: "Violoncello e Basso",
+        extraSections: ["低音提琴"],
+      },
+      "Violoncello e Basso",
+    );
+    eq(a.section, "其他", `section=${JSON.stringify(raw.section)} 应落其他`);
+    eq(a.extraSections, [], "主声部是其他时不收额外声部");
+    eq(a.abstainReason, undefined, "乐器名照样给出来了，不是弃权");
+  }
+  // 反向自检：主声部**认得出来**时照收（别把这条写成「凡是有其他就丢」）
+  const ok = buildAnalysis(
+    { section: "大提琴", instrument: "大提琴", evidence: "Violoncello e Basso", extraSections: ["低音提琴"] },
+    "Violoncello e Basso",
+  );
+  eq(ok.extraSections, ["低音提琴"], "主声部正常时照收");
+});
+
+Deno.test("extraSections：主声部是总谱时也不收（与前端逐条对应）", () => {
+  // ⚠️ 这一条**今天走不到**：`buildAnalysis` 的总谱分支在上一层就写死了
+  // `extraSections: []`，而这里拿到的 primary 已经过 `normalizeSection`、
+  // 永远不可能是「总谱」（它不在闭集里）。所以这条用例钉的是**函数自身的契约**，
+  // 不是一个可达路径 —— 目的正是让这个导出的函数与前端 `normalizeExtraSections`
+  // 逐条对应，将来谁把它改成「先统一算再分叉」时不会静默分叉。
+  eq(parseExtraSections(["大提琴", "低音提琴"], "总谱"), [], "总谱不该有额外声部");
+  eq(parseExtraSections(["大提琴"], "  总谱  "), [], "trim 后同样");
+});
+
+Deno.test("extraSections：闭集外的值直接丢弃，不弃权", () => {
+  const a = buildAnalysis(
+    {
+      section: "大提琴",
+      instrument: "大提琴",
+      evidence: "Violoncello e Basso",
+      // 模型把乐器清单当声部列表抄、或编了个不存在的声部名 —— 都只丢那一项
+      extraSections: ["低音提琴", "巴松管", "随便写的"],
+    },
+    "Violoncello e Basso",
+  );
+  eq(a.extraSections, ["低音提琴"], "只留下闭集里认得的");
+  eq(a.abstainReason, undefined, "主声部不受影响，不是弃权");
+  eq(a.section, "大提琴", "主声部照常");
+});
+
+Deno.test("extraSections：排除「总谱」与「其他」，也排除与主声部重复的", () => {
+  eq(
+    parseExtraSections(["总谱", "其他", "大提琴", "低音提琴"], "大提琴"),
+    ["低音提琴"],
+    "总谱不是声部、其他是弃权分组、主声部不重复落",
+  );
+  // 「总谱」压根不在闭集里（INSTRUMENT_ORDER 不含它），是被 VALID_SECTIONS 挡下的；
+  // 「其他」在闭集里，要单独排除 —— 两者走的是不同的分支，所以要一起测
+});
+
+Deno.test("extraSections：去重，且上界看**收下的**个数", () => {
+  eq(parseExtraSections(["低音提琴", "低音提琴", "中提琴"], "大提琴"), ["低音提琴", "中提琴"], "去重");
+  const many = parseExtraSections(
+    ["低音提琴", "中提琴", "大提琴", "长笛", "双簧管", "单簧管"],
+    "圆号",
+  );
+  eq(many.length, MAX_EXTRA_SECTIONS, "触顶就停");
+});
+
+Deno.test("extraSections：缺字段/没给/给不出声部 → 空数组，且不弃权", () => {
+  // **缺省安全**：这不是「模型答错」，而是**旧后端根本不返回这个字段**的形态 ——
+  // 前端按 `?? []` 读它，所以「缺席」必须与「空数组」同义，两仓才能各自上线。
+  for (const bad of [undefined, null, 1, {}, true]) {
+    const a = buildAnalysis(
+      {
+        section: "大提琴",
+        instrument: "大提琴",
+        evidence: "Violoncello e Basso",
+        extraSections: bad,
+      },
+      "Violoncello e Basso",
+    );
+    eq(a.extraSections, [], `坏值 ${JSON.stringify(bad)} 不该造出声部`);
+    eq(a.abstainReason, undefined, "也不该因此弃权");
+  }
+});
+
+Deno.test("extraSections：标量与数组同义（判据不与输入形态相关）", () => {
+  // `response_format: json_object` 下模型写成标量完全可达，而
+  // `"低音提琴"` 与 `["低音提琴"]` 语义完全相同 —— 一个放行一个拒绝，
+  // 就是又一处「形态相关的判据」（与 parseSubParts 那条教训同源）。
+  const run = (raw: unknown) =>
+    buildAnalysis(
+      { section: "大提琴", instrument: "大提琴", evidence: "Violoncello e Basso", extraSections: raw },
+      "Violoncello e Basso",
+    ).extraSections;
+  eq(run("低音提琴"), ["低音提琴"], "标量要接");
+  eq(run(["低音提琴"]), ["低音提琴"], "数组要接");
+  // 形态不同、语义相同的一对：都是「一个好元素 + 一个坏元素」，结论必须一致
+  eq(run(["低音提琴", "巴松管"]), run(["低音提琴", 42]), "坏元素的**形态**不该改变结论");
+  eq(run(["低音提琴", 42]), ["低音提琴"], "坏元素只丢自己");
+});
+
+Deno.test("extraSections：总谱路径恒为空", () => {
+  // 总谱是「所有声部都在里面」，不是「一份谱落到某几个声部」—— 额外声部在这里没有意义
+  const a = buildAnalysis(
+    {
+      isFullScore: true,
+      instrument: "总谱",
+      section: "其他",
+      evidence: "Flauto, Oboe",
+      extraSections: ["大提琴", "低音提琴"],
+    },
+    "Flauto, Oboe",
+  );
+  eq(a.isFullScore, true, "仍是总谱");
+  eq(a.extraSections, [], "总谱不带额外声部");
+});
+
+Deno.test("extraSections：与 subParts 互不干扰（同声部多分谱 ≠ 多声部）", () => {
+  // 这是最容易混的一对：`Horn_1,_2,_3,_4` 是**一个声部、四个分声部**，
+  // 该走 subParts；`Violoncello e Basso` 是**两个声部共用一份**，该走 extraSections。
+  const horns = buildAnalysis(
+    { section: "圆号", instrument: "F调圆号", subParts: [1, 2, 3, 4], evidence: "Corno I, II, III, IV" },
+    "Corno I, II, III, IV",
+  );
+  eq(horns.subParts, [1, 2, 3, 4], "四个号进 subParts");
+  eq(horns.extraSections, [], "不进 extraSections");
+
+  const celli = buildAnalysis(
+    {
+      section: "大提琴",
+      instrument: "大提琴",
+      subParts: [],
+      extraSections: ["低音提琴"],
+      evidence: "Violoncello e Basso",
+    },
+    "Violoncello e Basso",
+  );
+  eq(celli.extraSections, ["低音提琴"], "跨声部进 extraSections");
+  eq(celli.subParts, [], "没有分声部号");
+});
+
+Deno.test("extraSections：主声部带空白时，去重那条也要认得出来", () => {
+  // 早返回用的是 `primary.trim()`，而 `s` 也是 trim 过的 —— 只有去重那一处漏了的话，
+  // 主声部带空白就绕过它，前端会插两行同名文件。
+  for (const primary of ["低音提琴 ", " 低音提琴", "\u3000低音提琴", "低音提琴\u00A0"]) {
+    eq(parseExtraSections(["低音提琴"], primary), [], `primary=「${primary}」`);
+  }
+  eq(parseExtraSections(["低音提琴"], "大提琴"), ["低音提琴"], "不同声部照旧收下");
+});
+
+// —— 判断交回 LLM（2026-09-25，用户定：弃权是最后手段 / 词表不能作为分析的直接手段）——
+
+Deno.test("引文找不到也**采用**模型的答案 —— 它现在是信号，不是门", () => {
+  // 这是 2026-09-25 这次改动里最重要的一条语义变化。此前 `evidence-not-in-source` 是一道**弃权门**：
+  // 模型把引文翻译成中文、或 OCR 把引文打花时，整个本来可用的答案被丢掉。
+  // 而弃权在这条链路里不是「安全」——它是「什么都没做」，还会把这份文件推进分段
+  // （按页烧 OCR）。
+  //
+  // 现在：照样采用，只把「引文没在原文里找到」这个事实交给前端提示用户核对。
+  const r = buildAnalysis(
+    { section: "打击乐", instrument: "木琴", subParts: [], evidence: "这一段原文里根本没有" },
+    SOURCE,
+  );
+  eq(r.instrument, "木琴", "答案照用");
+  eq(r.section, "打击乐", "声部照用");
+  eq(r.evidenceFound, false, "但要把「没找到」标出来");
+  eq(r.abstainReason, undefined, "不再是弃权");
+
+  // 反向：引文真的在原文里 → 标 true
+  const ok = buildAnalysis(
+    { section: "打击乐", instrument: "木琴", subParts: [], evidence: "Campanelli e Silofono" },
+    SOURCE,
+  );
+  eq(ok.evidenceFound, true, "引文在原文里");
+  eq(ok.abstainReason, undefined, "更不该弃权");
+});
+
+Deno.test("evidenceFound：模型**没给**引文时是 false，且不弃权", () => {
+  const r = buildAnalysis({ section: "打击乐", instrument: "木琴", subParts: [], evidence: "" }, SOURCE);
+  eq(r.evidenceFound, false, "空引文 = 没找到");
+  eq(r.instrument, "木琴", "答案照用（此前是 no-evidence 弃权）");
+  eq(r.abstainReason, undefined, "不再是弃权");
+});
+
+Deno.test("总谱分支也照用模型结论：证据弱不再拦", () => {
+  // 此前 guard 会把「一个词顶上的证据」打成弃权，于是模型判对的总谱也可能被丢掉。
+  // 判据还给模型 + 用户确认（prompt 规则 0），代码只做形状校验。
+  for (const evidence of ["PARTITUR.", "Corno in Es", "1st Horn", "Flute part", ""]) {
+    const r = buildAnalysis({ section: "其他", instrument: "总谱", subParts: [], evidence, isFullScore: true }, SOURCE);
+    eq(r.isFullScore, true, `「${evidence}」不再拦总谱`);
+    eq(r.instrument, "总谱", "总谱形态照旧");
+    eq(r.abstainReason, undefined, "不弃权");
+  }
+});
+
+Deno.test("分谱一字不变：isFullScore=false 时结果与没有这个字段一模一样", () => {
+  // 「开关关着时对既有行为零影响」是这套改动的既定契约（前端还有一份对应断言）。
+  // 这条随 guard 一起被删过一次，重建 —— 它是**契约**用例，不是判据用例。
+  const withFalse = buildAnalysis(
+    { section: "打击乐", instrument: "木琴", subParts: [1], evidence: "Campanelli", isFullScore: false },
+    SOURCE,
+  );
+  const without = buildAnalysis(
+    { section: "打击乐", instrument: "木琴", subParts: [1], evidence: "Campanelli" },
+    SOURCE,
+  );
+  eq(JSON.stringify(withFalse), JSON.stringify(without), "一字不差");
+});
+
+Deno.test("弃权只剩形状类：语义类的都不再弃权", () => {
+  // 2026-09-25 这次改动删掉的弃权 reason（下面每条各举一例，别数个数）：
+  // `full-score-evidence-weak`（词表 guard）、`non-answer`（非答案词表）、
+  // `ambiguous-violin`（小提琴正则）、`no-evidence` / `evidence-not-in-source`（证据门）。
+  // 这条用「以前会被它们各自拦下的输入」反过来钉住它们没了。
+  const cases: Array<[string, Record<string, unknown>]> = [
+    ["证据太弱（旧 full-score-evidence-weak）", { section: "其他", instrument: "总谱", subParts: [], evidence: "x", isFullScore: true }],
+    ["非答案说法（旧 non-answer）", { section: "其他", instrument: "无法判断", subParts: [], evidence: "Campanelli" }],
+    ["小提琴没号（旧 ambiguous-violin）", { section: "其他", instrument: "小提琴", subParts: [], evidence: "Campanelli" }],
+    ["没给引文（旧 no-evidence）", { section: "打击乐", instrument: "木琴", subParts: [], evidence: "" }],
+  ];
+  for (const [what, record] of cases) {
+    const r = buildAnalysis(record, SOURCE);
+    eq(r.abstainReason, undefined, `${what}：现在照用`);
+  }
+  // 反向：真正「响应不可用」的仍然弃权（这些是形状，不是语义）
+  eq(buildAnalysis({ section: "打击乐", instrument: "", subParts: [], evidence: "x" }, SOURCE).abstainReason, "empty-instrument", "空乐器名照旧弃权");
+  eq(buildAnalysis({ section: "打击乐", instrument: "a".repeat(200), subParts: [], evidence: "x" }, SOURCE).abstainReason, "instrument-too-long", "超长照旧弃权");
+  // ⚠️ 下面这组**两个分支都要覆盖**：`\.\.` 一支与 `\p{Cc}`/`\p{Cf}` 一支。
+  // 2026-09-25 重写测试时曾只剩 `../etc/passwd` 一条 —— 于是把 `/\p{Cc}|\p{Cf}/` 整支
+  // 删掉也全绿（对抗测试实测）。NUL 会让整行 insert 失败，而对象已经传上去了 → 孤儿对象。
+  for (const bad of ["../etc/passwd", "x/../../y", "长笛\u{0}", "a\u{1f}b", "长笛\u{200b}"]) {
+    eq(
+      buildAnalysis({ section: "打击乐", instrument: bad, subParts: [], evidence: "x" }, SOURCE).abstainReason,
+      "instrument-illegal-chars",
+      `非法字符照旧弃权：${JSON.stringify(bad)}`,
+    );
+  }
+  // NFKC 折叠后才出现的 `..`：`．.`（全角点 + 半角点）折完就是 `..`，字面正则挡不住
+  for (const folded of ["．.", ".．", "．．"]) {
+    eq(
+      buildAnalysis({ section: "打击乐", instrument: folded, subParts: [], evidence: "x" }, SOURCE).abstainReason,
+      "instrument-illegal-chars",
+      `NFKC 折叠后才成 .. 的写法：${JSON.stringify(folded)}`,
+    );
+  }
+  // 长度上界**数码点**（星光平面字符占 2 个码元，用 .length 会让上界凭空减半）
+  const astral = "𠀀";
+  eq([...astral.repeat(64)].length, 64, "对照组：64 个码点");
+  eq(buildAnalysis({ section: "打击乐", instrument: astral.repeat(64), subParts: [], evidence: "x" }, SOURCE).abstainReason, undefined, "64 个码点放行");
+  eq(buildAnalysis({ section: "打击乐", instrument: astral.repeat(65), subParts: [], evidence: "x" }, SOURCE).abstainReason, "instrument-too-long", "65 个码点弃权");
 });

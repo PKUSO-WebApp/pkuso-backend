@@ -1,5 +1,5 @@
 import { handler, retry } from "./handler.ts";
-import { MAX_SUB_PARTS } from "./analyze.ts";
+import { MAX_EXTRA_SECTIONS, MAX_SUB_PARTS } from "./analyze.ts";
 
 // 把退避压到 1ms：真等 1s/2s/4s 会让整套用例跑 40 秒以上，没人愿意跑就等于没有保护。
 // 退避的**比例**由 `retry.baseDelayMs` 的默认值保证，见下面那条断言。
@@ -100,6 +100,8 @@ Deno.test("正常路径：平铺字段 + 只请求一次", async () => {
   eq(calls, 1, "上游调用次数");
   // 字段必须平铺在顶层 —— 前端读 data.instrument / data.subParts
   eq([j.success, j.section, j.instrument], [true, "打击乐", "木琴"], "响应体");
+  // `evidenceFound` 也必须平铺在顶层（靠 `...analysis` 展开，改成显式列字段时最容易漏它）
+  eq(j.evidenceFound, true, "evidenceFound 平铺在顶层");
   eq(j.subParts, [], "没有分声部时是空数组（不再是 null）");
 });
 
@@ -111,6 +113,19 @@ Deno.test("prompt 里的分声部号上界由 MAX_SUB_PARTS 插值，不是手�
   eq(lastPrompt.includes(`个数最多 ${MAX_SUB_PARTS}`), true, "上界要与常量一致");
   // 反向自检：真拿到了 prompt 正文，不是因为两边都空而「通过」
   eq(lastPrompt.length > 200, true, "prompt 正文确实取到了");
+});
+
+Deno.test("prompt 里的额外声部上界由 MAX_EXTRA_SECTIONS 插值，不是手抄一份", async () => {
+  // 与上一条同一条理由：抄一个数字进 prompt，改了常量而 prompt 仍在对模型说旧值 ——
+  // 模型照旧上界给、代码按新上界截，两边静默拆台。
+  reset(() => new Response(OK_BODY, { status: 200 }));
+  await post({ text: SRC });
+  eq(lastPrompt.includes(`个数最多 ${MAX_EXTRA_SECTIONS}`), true, "上界要与常量一致");
+  // ⚠️ **两句的措辞一模一样，只有数字不同**（32 / 3），而 `"个数最多 3"` 是
+  // `"个数最多 32"` 的子串 —— 所以光断那一句区分不出「插值没了」。
+  // 数**出现次数**才钉得住：两句都必须在。
+  const hits = lastPrompt.split("个数最多 ").length - 1;
+  eq(hits, 2, "两条上界（分声部号 / 额外声部）都要在 prompt 里");
 });
 
 Deno.test("fetch 抛异常也要重试到底（网络故障是最该重试的一类）", async () => {
