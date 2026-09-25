@@ -189,14 +189,19 @@ export async function handler(req: Request): Promise<Response> {
     // 请求体不是合法 JSON 时别把 JS 解析器的原文回给前端
     //（`Unexpected end of JSON input` 对排查没帮助，还泄漏内部结构）。
     // body 是字面 `null` 时也走这里，不再让解构抛错。
-    let body: { text?: unknown; ocr_text?: unknown; file_name?: unknown } | null;
+    let body: { ocr_text?: unknown; file_name?: unknown } | null;
     try {
       body = await req.json();
     } catch {
       body = null;
     }
 
-    const inputText = body?.text || body?.ocr_text;
+    // ⚠️ **只认 `ocr_text`**：这里原来还有 `|| body?.text` 这个别名，而它**从来没有真实
+    // 调用方** —— pkuso-web 从发出第一个请求起，发的就一直是 `ocr_text`（翻它的历史可见）。
+    // 所以那个别名只是凭空多出来的第二种写法：两个字段名并存时「前端到底发了哪个」在协议上
+    // 就说不清了；更糟的是**测试里到处都在用它**，等于测试没在验真实契约。
+    // 现在发旧名会**响亮地** 400（见下面那句 error），而不是被悄悄认下。
+    const inputText = body?.ocr_text;
 
     /**
      * 文件名**单独一个字段**（pkuso-web#300）。
@@ -235,13 +240,17 @@ export async function handler(req: Request): Promise<Response> {
     // 读到的字太少）时，**只用文件名**让模型判断（那条路的注释里就写着「body 里只有文件名」）。
     // 拆字段之前，那种请求的 `ocr_text` 是 `"文件名: X"` 那一行，所以非空；
     // 拆完之后它会是空串 —— 若这里照旧 400，那条**既有**的降级路会被整条打断。
-    // 判据因此改成「两样至少给一样」，而不是「`ocr_text` 必须非空」。
+    // 判据因此是「`ocr_text` **必须是字符串**」+「两样至少给一样」，而不是「`ocr_text` 必须非空」。
+    // ⚠️ 两句话都要：**字段整个缺失**（不等于空串）仍然 400 —— 只给文件名、连 `ocr_text` 键都不发
+    // 的请求会被拦下。今天没有这样的调用方（pkuso-web 无条件发 `ocr_text`，最差是空串），
+    // 但报文里那句「unless a non-empty file_name is provided」说的是**空串**那一种，
+    // 别读成「可以不发这个字段」。
     if (typeof inputText !== 'string' || (!inputText && !fileName)) {
       return new Response(
         JSON.stringify({
           success: false,
           error:
-            'text/ocr_text is required and must be a non-empty string (unless a non-empty file_name is provided)',
+            'ocr_text must be a string, and must be non-empty unless a non-empty file_name is provided',
         }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
