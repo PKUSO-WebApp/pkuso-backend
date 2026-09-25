@@ -192,6 +192,23 @@ export interface Analysis {
   evidenceFound: boolean;
 
   /**
+   * 引文**只在文件名里**找得到（页面 OCR 文本里没有）。
+   *
+   * 与 `evidenceFound` 分开报，是因为「引文来自文件名」和「引文根本没找到」是两件
+   * 完全不同的事，而它们此前都被算成「找到了」：
+   *
+   * · 出版社扫描分谱的乐器名往往就印在文件名里（`PMLASIA01165-13-Horn_2.pdf`），
+   *   而页面是扫描件、OCR 读出来是乱的 —— 这时抄文件名是**正当**的依据；
+   * · 但抄文件名里的**流水号**（`IMSLP807980-PMLP2711-10`）就不支撑任何结论了 ——
+   *   那正是「引文存在于输入 ≠ 支撑结论」这个弱点的形态（pkuso-web#300 实测 36 次里 2 次）。
+   *
+   * 后端**判不了**「这句引文到底支不支撑这个结论」（那是子串检查做不到的事，同
+   * `score-guard-cannot-judge` 那条教训），所以这里只报**事实**：引文出现在哪儿。
+   * 用户据此知道该去页面上核对、还是去看文件名 —— 这才是「让用户复核」。
+   */
+  evidenceFromFileName: boolean;
+
+  /**
    * 这一页是不是**总谱**（多个乐器并列、多行谱表）。
    *
    * **必须在「空乐器 → 弃权」之前判定**：没有任何单一乐器**正是总谱的特征**，
@@ -408,6 +425,7 @@ export function abstain(reason: string, sectionRaw?: string): Analysis {
     extraSections: [],
     // 弃权时引文恒为空 —— 没有可核对的引文
     evidenceFound: false,
+    evidenceFromFileName: false,
     abstainReason: reason,
     ...(sectionRaw ? { sectionRaw } : {}),
   };
@@ -492,11 +510,16 @@ export function parseExtraSections(raw: unknown, primary: string): string[] {
  * 语义判断交给模型（prompt 规则 0）与用户确认那一步，代码不再复核。
  *
  * @param parsed 已 JSON.parse 的模型输出
- * @param source 送给模型的原始文本 —— 用来算 `evidenceFound`（信号，不参与弃权）。
+ * @param source **页面的 OCR 文本**（不含文件名）—— 用来算 `evidenceFound`
+ *   （信号，不参与弃权）。⚠️ 2026-09-26 起这里**只收 OCR 文本**：以前收的是
+ *   「文件名 + OCR」拼成的一整段，于是引文抄文件名也算「在原文里找到」，
+ *   而那个信号是「让用户复核」的唯一依据（pkuso-web#300）。
  *   收 `unknown` 而非 `string`：请求体是用户可控的 JSON，值不一定是字符串，
  *   这里必须自己兜住而不是让调用方的类型假设变成运行时异常。
+ * @param fileName 文件名（可选）。只用来算 `evidenceFromFileName` —— 引文**没在页面上、
+ *   只在文件名里**找得到时，前端会显示成另一种依据（来自文件名，不是页面）。
  */
-export function buildAnalysis(parsed: unknown, source: unknown): Analysis {
+export function buildAnalysis(parsed: unknown, source: unknown, fileName?: unknown): Analysis {
   const record =
     parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
 
@@ -511,6 +534,13 @@ export function buildAnalysis(parsed: unknown, source: unknown): Analysis {
   // 引文能不能在原文里找到 —— **信号，不是门**（见 `evidenceFound` 字段的说明）。
   const evidenceFound =
     typeof source === "string" && evidence !== "" && evidenceSupports(evidence, source);
+  // 只在「页面上找不到」时才问文件名 —— 页面上找得到就是最强的那个依据，
+  // 不必再报「也在文件名里」这种没有信息量的组合。
+  const evidenceFromFileName =
+    !evidenceFound &&
+    evidence !== "" &&
+    typeof fileName === "string" &&
+    evidenceSupports(evidence, fileName);
 
   if (isFullScore) {
     if (typeof source !== "string") return abstain("bad-source", sectionRaw);
@@ -526,6 +556,7 @@ export function buildAnalysis(parsed: unknown, source: unknown): Analysis {
       evidence,
       isFullScore: true,
       evidenceFound,
+      evidenceFromFileName,
     };
   }
 
@@ -583,6 +614,7 @@ export function buildAnalysis(parsed: unknown, source: unknown): Analysis {
     evidence,
     isFullScore: false,
     evidenceFound,
+    evidenceFromFileName,
     ...(sectionRaw ? { sectionRaw } : {}),
     ...(subPartsRaw ? { subPartsRaw } : {}),
   };

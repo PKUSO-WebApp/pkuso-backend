@@ -510,6 +510,55 @@ Deno.test("原型污染：__proto__ 不会变成 instrument", () => {
   eq(({} as Record<string, unknown>).instrument, undefined, "Object.prototype 被污染");
 });
 
+// —— 引文的来源（pkuso-web#300）——
+// 「引文在页面上」「引文只在文件名里」「哪儿都没找到」是**三件不同的事**，
+// 而分开之前它们都被算成「找到了」：抄文件名里的流水号也能让 `evidenceFound` 为真，
+// 而那个字段是「让用户复核」的唯一依据（实测 36 次里 2 次是这种情形）。
+Deno.test("引文来源三分：页面 / 只在文件名 / 都没找到", () => {
+  const ocr = "CAMPANELLI E SILOFONO. Allegretto";
+  const name = "PMLASIA01165-13-Horn_2.pdf";
+  const mk = (evidence: string, fileName?: string) =>
+    buildAnalysis({ section: "圆号", instrument: "圆号", subParts: [], evidence }, ocr, fileName);
+
+  // ① 抄页面 —— 最强的依据
+  eq(
+    [mk("CAMPANELLI E SILOFONO", name).evidenceFound, mk("CAMPANELLI E SILOFONO", name).evidenceFromFileName],
+    [true, false],
+    "抄页面",
+  );
+  // ② 抄文件名 —— **正当**依据（出版社把乐器名印在文件名里，页面 OCR 可能是乱的）
+  eq(
+    [mk("Horn_2", name).evidenceFound, mk("Horn_2", name).evidenceFromFileName],
+    [false, true],
+    "抄文件名",
+  );
+  // ③ 抄文件名里的**流水号** —— 它确实在文件名里（后端只报事实，不判「支不支撑」），
+  //    但它不是页面内容，所以 `evidenceFound` 必须是 false
+  eq(
+    [mk("PMLASIA01165-13", name).evidenceFound, mk("PMLASIA01165-13", name).evidenceFromFileName],
+    [false, true],
+    "流水号",
+  );
+  // ④ 哪儿都没有
+  eq(
+    [mk("Beethoven", name).evidenceFound, mk("Beethoven", name).evidenceFromFileName],
+    [false, false],
+    "都没找到",
+  );
+  // ⑤ 不给文件名（**段级调用**就是这样）→ 恒为 false，不会凭空报「来自文件名」
+  eq(
+    [mk("Horn_2").evidenceFound, mk("Horn_2").evidenceFromFileName],
+    [false, false],
+    "没传文件名",
+  );
+  // ⑥ 页面找得到时**不再**追问文件名（页面上找得到就是最强的那个依据）
+  eq(
+    [mk("CAMPANELLI", name).evidenceFound, mk("CAMPANELLI", name).evidenceFromFileName],
+    [true, false],
+    "页面找得到就不看文件名",
+  );
+});
+
 Deno.test("abstain 形态符合契约", () => {
   eq(abstain("x"), {
     section: "其他",
@@ -524,6 +573,9 @@ Deno.test("abstain 形态符合契约", () => {
     extraSections: [],
     // 引文能不能在原文里找到 —— 弃权时恒为 false（没有可核对的引文）
     evidenceFound: false,
+    // 同样恒存在：引文「只在文件名里找到」是**另一种依据**（pkuso-web#300），
+    // 前端据它换一句话显示。缺席与 false 在界面上不可区分，恒存在就少一个分支。
+    evidenceFromFileName: false,
     abstainReason: "x",
   }, "弃权形态");
 });

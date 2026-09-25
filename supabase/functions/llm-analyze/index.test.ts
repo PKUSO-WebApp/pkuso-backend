@@ -218,6 +218,34 @@ Deno.test("上游 200 但 content 不是字符串：不抛、走弃权", async (
   eq([j.success, j.instrument, j.abstainReason], [true, "", "bad-json"], "应弃权");
 });
 
+Deno.test("file_name 单独传：类型不对一律 400（不静默降级）", async () => {
+  reset(() => new Response(OK_BODY, { status: 200 }));
+  for (const bad of [42, [], {}]) {
+    const res = await post({ ocr_text: SRC, file_name: bad });
+    eq(res.status, 400, `file_name=${JSON.stringify(bad)} 应 400`);
+  }
+  // 悄悄忽略一个类型不对的 `file_name` 会让 `evidenceFromFileName` 恒为假 ——
+  // 那是静默降级，正是这个仓库栽过的那类坑，所以这里不宽容。
+  eq(calls, 0, "类型不对的请求不该触达上游");
+
+  // `null` / 缺省 = **没有文件名**（段级调用就是这样），不是错误
+  eq((await post({ ocr_text: SRC, file_name: null })).status, 200, "null 视为没有文件名");
+  eq(calls, 1, "只有那一次触达上游");
+});
+
+Deno.test("文件名单独成段，且标明「不代表某一页」（#300）", async () => {
+  reset(() => new Response(OK_BODY, { status: 200 }));
+  await post({ ocr_text: SRC, file_name: "…--_Piccolo,_Flute_1,_2.pdf" });
+  eq(lastPrompt.includes("不代表某一页"), true, "要点明文件名不代表某一页");
+  eq(lastPrompt.includes("Piccolo,_Flute_1,_2.pdf"), true, "文件名仍要发给模型");
+
+  // 反向自检：**不给文件名时那句不该出现**（段级调用走的正是这条路，
+  // 而「三段都按文件名填成同一样号」就是被那句要防的事）。
+  reset(() => new Response(OK_BODY, { status: 200 }));
+  await post({ ocr_text: SRC });
+  eq(lastPrompt.includes("不代表某一页"), false, "没有文件名时不该出现那句");
+});
+
 Deno.test("请求体畸形：一律 400，且不泄漏内部错误原文", async () => {
   reset(() => new Response(OK_BODY, { status: 200 }));
   for (const body of ["", "null", "[]", "not json", JSON.stringify({ text: 42 }), JSON.stringify({})]) {

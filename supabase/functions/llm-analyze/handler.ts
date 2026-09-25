@@ -70,9 +70,19 @@ const corsHeaders = {
  * 才由声部推导（是**兜底**，不是覆盖）—— 理由见 analyze.ts 的 VIOLIN_SUB_PART
  * 与下面响应处的注释。
  */
-function buildPrompt(inputText: string): string {
-  return `你是乐团谱务助手。下面是一份分谱首页的识别文本（第一行是文件名，其余是 OCR 结果）。
+function buildPrompt(inputText: string, fileName = ""): string {
+  return `你是乐团谱务助手。下面是一份分谱首页的识别文本。
 请判断这份谱子属于哪个声部、是什么乐器。
+${
+  // 文件名单列一段、并说清它的地位（pkuso-web#300）：它描述的是**整本合订**，
+  // 可能含多件乐器，所以**不能**拿它当「这一页是什么」的判据 —— 那是段级误判的根因
+  // （一份 `…--_Piccolo,_Flute_1,_2.pdf` 拆成三段时，三段都按文件名填成同一样号）。
+  // 但它对**整份**仍然是最可靠的线索之一（出版社常把乐器名印在文件名里，
+  // 而页面是扫描件、OCR 读出来是乱的），所以照发，只是把话说清。
+  fileName
+    ? `\n文件名（描述**整本合订**，可能含多件乐器，**不代表某一页**）：${fileName}\n`
+    : ""
+}
 
 声部（section）必须从这个闭集里**原样**选一个，不要改写、不要用同义词：
 ${SECTION_LIST}
@@ -175,7 +185,7 @@ export async function handler(req: Request): Promise<Response> {
     // 请求体不是合法 JSON 时别把 JS 解析器的原文回给前端
     //（`Unexpected end of JSON input` 对排查没帮助，还泄漏内部结构）。
     // body 是字面 `null` 时也走这里，不再让解构抛错。
-    let body: { text?: unknown; ocr_text?: unknown } | null;
+    let body: { text?: unknown; ocr_text?: unknown; file_name?: unknown } | null;
     try {
       body = await req.json();
     } catch {
@@ -183,6 +193,34 @@ export async function handler(req: Request): Promise<Response> {
     }
 
     const inputText = body?.text || body?.ocr_text;
+
+    /**
+     * 文件名**单独一个字段**（pkuso-web#300）。
+     *
+     * 以前它是拼进 `ocr_text` 第一行的（`文件名: X\nOCR 文本: Y`），于是
+     * `evidenceSupports` 判「引文在原文里找到」时把文件名也算进原文 ——
+     * 抄文件名、甚至只抄文件名里的流水号（`IMSLP807980-PMLP2711-10`）都能让
+     * `evidenceFound` 为真，而那个字段是「让用户复核」的唯一依据。
+     * 实测 36 次调用里有 2 次是这种情形。
+     *
+     * 现在分开传：引文只出现在文件名里时报 `evidenceFromFileName`（另一种依据），
+     * 而不是冒充「在页面上找到了」。
+     *
+     * ⚠️ **可选字段，但类型错了不宽容**（同本文件对 `ocr_text` 的做法）：
+     * 悄悄忽略一个类型不对的 `file_name`，会让 `evidenceFromFileName` 恒为假 ——
+     * 那是**静默降级**，正是这个仓库反复栽过的那类坑。
+     */
+    const rawName = body?.file_name;
+    if (rawName !== undefined && rawName !== null && typeof rawName !== "string") {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: 'file_name must be a string when provided',
+        }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+    const fileName = typeof rawName === "string" ? rawName.trim() : "";
 
     // 请求体是用户可控的 JSON，值不一定是字符串。类型不对在这里就回 400 ——
     // 否则它会一路走到语义判断，拿一个非字符串去规范化（abstainReason 会说谎，
@@ -205,7 +243,7 @@ export async function handler(req: Request): Promise<Response> {
       );
     }
 
-    const prompt = buildPrompt(inputText);
+    const prompt = buildPrompt(inputText, fileName);
 
     // 带重试的 DeepSeek 调用
     const maxRetries = 3;
@@ -286,7 +324,9 @@ export async function handler(req: Request): Promise<Response> {
         // 拿不到合法 JSON 就弃权，交给用户填。
         let analysis: Analysis;
         try {
-          analysis = buildAnalysis(JSON.parse(responseText), inputText);
+          // ⚠️ 第三个参数是**文件名**：`evidenceFound` 只拿页面文本判，
+          // 引文只在文件名里找得到时走 `evidenceFromFileName`（见 `buildAnalysis`）。
+          analysis = buildAnalysis(JSON.parse(responseText), inputText, fileName);
         } catch {
           analysis = abstain('bad-json');
         }
