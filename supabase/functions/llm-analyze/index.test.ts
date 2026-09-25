@@ -227,7 +227,8 @@ Deno.test("旧字段名 text 已经不再被接受：400（那个别名已删除
 });
 Deno.test("file_name 类型不对：一律 400（不静默降级）", async () => {
   // ⚠️ 用例名里的「单独传」原来指的是「单独一个字段发」（与 OCR 文本分开发），
-  // 但这里的请求**每条都带 `ocr_text`** —— 真正「只发 file_name」的形状在下面那条用例里。
+  // 但这里的请求**每条都带 `ocr_text`** —— 字面「只发 file_name」（没有 `ocr_text` 键）
+  // 那个形状的断言在下面「只发 file_name、连 `ocr_text` 键都不发」那条里。
   reset(() => new Response(OK_BODY, { status: 200 }));
   for (const bad of [42, [], {}]) {
     const res = await post({ ocr_text: SRC, file_name: bad });
@@ -254,16 +255,13 @@ Deno.test("只有文件名（没有 OCR 文本）：200，且 prompt 明说「�
   eq(lastPrompt.includes("只根据上面的文件名"), true, "要指路到文件名");
 });
 
-Deno.test("两样都没有：400（判据是「ocr_text 是字符串」+「至少给一样」）", async () => {
+Deno.test("两样都没有（都是空形态）：400（判据是「ocr_text 是字符串」+「至少给一样」）", async () => {
   reset(() => new Response(OK_BODY, { status: 200 }));
   for (
     const body of [
       { ocr_text: "" },
       { file_name: "" },
       {},
-      // ⚠️ **字段整个缺失**（不是空串）也要 400：`ocr_text` 是必填的字符串，只有文件名不够。
-      // 报文里那句「unless a non-empty file_name is provided」说的是**空串**那一种（见上一条用例）。
-      { file_name: "x.pdf" },
     ]
   ) {
     const res = await post(body);
@@ -276,6 +274,17 @@ Deno.test("两样都没有：400（判据是「ocr_text 是字符串」+「至�
   // 为假）。顺手加严会是一次**无关的行为变更**，那正是本仓反复栽过的那类坑。
   reset(() => new Response(OK_BODY, { status: 200 }));
   eq((await post({ ocr_text: "   " })).status, 200, "只有空白仍然放行（既有行为，未变）");
+});
+
+Deno.test("只发 file_name、连 `ocr_text` 键都不发：400（与「空串 + 文件名」不是一回事）", async () => {
+  // ⚠️ 区分点是**键在不在**，不是空不空：`{ ocr_text: "", file_name: X }` 放行（上一条用例），
+  // 而这里 `ocr_text` 整个缺失 → 报文第一句「must be a string」先命中。
+  // 今天没有这样的调用方（pkuso-web 无条件发 `ocr_text`，最差是空串），钉住它是免得以后有人把
+  // 「unless a non-empty file_name is provided」读成「给了文件名就够了」。
+  reset(() => new Response(OK_BODY, { status: 200 }));
+  const res = await post({ file_name: "x.pdf" });
+  eq(res.status, 400, "只发文件名要 400");
+  eq(calls, 0, "不该触达上游");
 });
 
 Deno.test("文件名单独成段，且标明「不代表某一页」（#300）", async () => {
@@ -293,9 +302,9 @@ Deno.test("文件名单独成段，且标明「不代表某一页」（#300）",
 
 Deno.test("请求体畸形：一律 400，且不泄漏内部错误原文", async () => {
   reset(() => new Response(OK_BODY, { status: 200 }));
-  // ⚠️ 里面那条 `{ ocr_text: 42 }` 是这个列表里**唯一**在验「类型不对」的（其余都是
-  // 「不是合法 JSON 对象」）—— 别把它换成别的字段名，否则 `typeof inputText !== 'string'`
-  // 那一支就没人验了。
+  // ⚠️ 里面那条 `{ ocr_text: 42 }` 是这个列表里**唯一**在验「值存在但不是字符串」的
+  // （其余是「不是合法 JSON」或「字段缺失」，`{}` 属于后者）—— 别把它换成别的字段名，
+  // 否则「值不是字符串」那种情形就没人验了。
   for (const body of ["", "null", "[]", "not json", JSON.stringify({ ocr_text: 42 }), JSON.stringify({})]) {
     const res = await post(body);
     const j = await res.json();
