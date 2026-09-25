@@ -163,10 +163,14 @@ ${SECTION_LIST}
 10. 文本里可能有大量与乐器无关的内容（弓法、力度、排练号、页码）。
    乐器名通常在首页顶部，但**不要假设它一定排在最前面**。
 
-识别文本：
-"""
-${inputText}
-"""
+${
+  // 没有 OCR 文本是**真实存在**的一路（前端「一页有内容的都没读到」时只用文件名判断）。
+  // 那时留一个空的识别文本块，模型会不知道该怎么办 —— 明说一句既省得它乱猜，
+  // 也告诉它证据该抄哪里（抄文件名，后端会据此报 `evidenceFromFileName`）。
+  inputText
+    ? `识别文本：\n"""\n${inputText}\n"""`
+    : `⚠️ **这一页没有可用的识别文本**（OCR 读不出或整页空白）—— 请**只根据上面的文件名**判断，\n   并在 evidence 里抄你据以判断的那一段**文件名**。`
+}
 
 结果：`;
 }
@@ -225,11 +229,19 @@ export async function handler(req: Request): Promise<Response> {
     // 请求体是用户可控的 JSON，值不一定是字符串。类型不对在这里就回 400 ——
     // 否则它会一路走到语义判断，拿一个非字符串去规范化（abstainReason 会说谎，
     // 报成「模型在编」），或者更早地把分析逻辑抛成异常。
-    if (typeof inputText !== 'string' || !inputText) {
+    //
+    // ⚠️ **`ocr_text` 为空是允许的，前提是给了文件名**（2026-09-26，配合 #300）：
+    // 前端有一条真实的降级路 —— 一页有内容的都没读到（全空白 / 渲染失败 / OCR 读不出 /
+    // 读到的字太少）时，**只用文件名**让模型判断（那条路的注释里就写着「body 里只有文件名」）。
+    // 拆字段之前，那种请求的 `ocr_text` 是 `"文件名: X"` 那一行，所以非空；
+    // 拆完之后它会是空串 —— 若这里照旧 400，那条**既有**的降级路会被整条打断。
+    // 判据因此改成「两样至少给一样」，而不是「`ocr_text` 必须非空」。
+    if (typeof inputText !== 'string' || (!inputText && !fileName)) {
       return new Response(
         JSON.stringify({
           success: false,
-          error: 'text/ocr_text is required and must be a non-empty string',
+          error:
+            'text/ocr_text is required and must be a non-empty string (unless a non-empty file_name is provided)',
         }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
