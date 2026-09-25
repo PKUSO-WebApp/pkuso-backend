@@ -1,4 +1,11 @@
-import { type Analysis, abstain, buildAnalysis, MAX_SUB_PARTS, SECTIONS } from "./analyze.ts";
+import {
+  type Analysis,
+  abstain,
+  buildAnalysis,
+  MAX_EXTRA_SECTIONS,
+  MAX_SUB_PARTS,
+  SECTIONS,
+} from "./analyze.ts";
 
 /*
  * handler 单独成模块，index.ts 只负责把它交给 serve()。
@@ -66,16 +73,28 @@ ${SECTION_LIST}
 这些都判断不出来时，用「其他」。
 
 只返回一个 JSON 对象，不要任何解释文字：
-{"section": "声部", "instrument": "中文乐器名", "subParts": [数字...], "evidence": "原文片段", "isFullScore": false}
+{"section": "声部", "instrument": "中文乐器名", "subParts": [数字...], "extraSections": [声部...], "evidence": "原文片段", "isFullScore": false}
 
 规则：
 0. **先判它是不是「总谱」**（isFullScore）：总谱 = **一页上并列着多个乐器**（多行谱表、
    每行一个乐器名，如 Flauto / Oboe / Clarinetto / Corno 同时出现）。
    - 是总谱 → "isFullScore": true，此时 instrument 给「总谱」、section 给「其他」、
-     subParts 给 []，evidence 抄那串乐器名里的一小段。
+     subParts 给 []、extraSections 给 []。
    - 不是（只有**一件**乐器，哪怕它出现了很多次）→ "isFullScore": false，照下面的规则填。
    ⚠️ 判据是**这一页的版式**，不是找词：不要因为「出现了乐器名」就判总谱 ——
    分谱的每一页页眉都印着乐器名。看的是**同一页上有没有多个不同的乐器**。
+   ⚠️ **这个判断由你来做，后端不再复核你的结论** —— 它只把 evidence 原样交给用户核对。
+      所以 evidence 请抄**你据以判断的那段原文**，让用户一眼就能复核你：
+      ① 判成总谱时：**这一页上并列的那串乐器名**最合适（原样抄，逗号或顿号分隔都行）；
+         封面 / 标题页上的**版次标注或标题行**也可以（Partitur / Score / 总谱 /
+         партитура 这类字样 —— 各语种的写法远不止这几个，**按语义判断**，
+         上面几个只是例子）。一般**只有总谱会有封面**。
+      ② 判成分谱时：抄**印着这件乐器的那一行**（通常是页眉）。
+      一行可用原文都抄不出时，evidence 给空串（**不要编**）—— 用户看到空引文会自己核对。
+   ⚠️ 但**一件乐器加它的号或调性不算两个乐器**：「Corno in Es」「Tromba in Do」
+      「Clarinetto in Si♭」「1st Horn」「Corno I, II」都是**一件**乐器的写法
+      （调性与号是它名字的一部分，见规则 1），一份单件乐器的分谱页眉就长这样 ——
+      不要把它当成「并列多个乐器」。
    ⚠️ 语言的写法千差万别（俄/德/意/法/英混排），**按音乐常识判断**，
    不要依赖某个语言的拼写。
 
@@ -89,17 +108,21 @@ ${SECTION_LIST}
    而同一乐器的**不同调版本是不同的分谱**。
    其余不要求归一：写成「木琴」或「马林巴」都可以，分组靠 section，不靠乐器名。
 2. evidence 必须是从下面文本里**原样抄出**的片段：保持原语言、原拼写，不要翻译、
-   不要改写、不要补全。找不到能支撑结论的原文片段时，就返回弃权形态。
-3. 弃权形态（证据不足或读不出乐器）：
-   {"section": "其他", "instrument": "", "subParts": [], "evidence": ""}
-   **不要猜。**
+   不要改写、不要补全。抄不出可用原文时给空串（见规则 0），**不要编一段出来**。
+3. 弃权形态（**读不出乐器**、或这一页根本不是乐谱）：
+   {"section": "其他", "instrument": "", "subParts": [], "extraSections": [], "evidence": ""}
+   **不要猜。**也说不出乐器名时就用这个形态 —— **不要**拿「无法判断」「未知」「N/A」
+   这类词去填 instrument：那串字会原样变成乐器名与文件名。
 4. 先判版次语言，再解释乐器词。版次语言由**出版社**决定，**不由作曲家国籍决定** ——
    同一位作曲家的不同版次可能分别是俄文版、英文版、德文版。
    判断依据是文本里的标题写法、速度记号、出版标识。
    例：ПЯТАЯ СИМФОНИЯ 是俄文版；Symphony No. 5 in F Major 是英文版。
 5. 先定乐器，再由乐器推声部，两者必须自洽 —— 不能出现「section 是打击乐、instrument 是大管」。
 6. 易混词（歧义候选都落在弦乐内部，判错也不会跳到管乐）：
-   意大利文 Basso → 大提琴；德文 Bass / Kontrabass → 低音提琴；
+   意大利文 Basso **单独出现**时 → 大提琴（意文版次里那是低音声部的写法）；
+   但写成「Violoncello e Basso」「Celli e Bassi」这种**并列两件乐器**的形式时，
+   见规则 9 —— 那是跨两个声部的共用谱，不要只挑一个。
+   德文 Bass / Kontrabass → 低音提琴；
    意大利文 Corno → 圆号（不是小号）；Tromba → 小号；Trombone → 长号；
    意大利文 Campanelli → 钟琴；Silofono → 木琴；Arpa → 竖琴；Timpani → 定音鼓。
 7. 小提琴：section 用「第一小提琴」或「第二小提琴」，instrument 用「小提琴」。
@@ -111,7 +134,16 @@ ${SECTION_LIST}
    **不要照抄成 "1-4"** —— 区间是必须由你展开的写法，后端只认阿拉伯数字的列表。
    **不要写罗马数字、中文数字。**
    个数最多 ${MAX_SUB_PARTS}；单个号本身无上限，不要假设最大值。
-9. 文本里可能有大量与乐器无关的内容（弓法、力度、排练号、页码）。
+9. **一份谱同时属于两个声部**时（两件**不同声部**的乐器共用同一份谱），把**主声部**
+   写在 section，其余的写进 extraSections（数组，元素同样从上面的闭集里原样选）。
+   例：「Violoncello e Basso」= 大提琴与低音提琴共用 → section 给「大提琴」、
+   extraSections 给 ["低音提琴"]；「Celli e Bassi」同理。
+   ⚠️ 只在**确实是两个不同声部**时才这么写。同一件乐器的几个分声部
+      （Horn 1,2,3,4 订成一份）**不是**两个声部 —— 那是 subParts 的事，
+      extraSections 给 []。
+   ⚠️ 不要写「总谱」，也不要重复 section 里已经写过的那个声部。没有就给 []。
+   个数最多 ${MAX_EXTRA_SECTIONS}。
+10. 文本里可能有大量与乐器无关的内容（弓法、力度、排练号、页码）。
    乐器名通常在首页顶部，但**不要假设它一定排在最前面**。
 
 识别文本：
@@ -146,8 +178,8 @@ export async function handler(req: Request): Promise<Response> {
     const inputText = body?.text || body?.ocr_text;
 
     // 请求体是用户可控的 JSON，值不一定是字符串。类型不对在这里就回 400 ——
-    // 否则它会一路走到证据校验，被记成「模型在编」（abstainReason 说谎），
-    // 或者更早地把分析逻辑抛成异常。
+    // 否则它会一路走到语义判断，拿一个非字符串去规范化（abstainReason 会说谎，
+    // 报成「模型在编」），或者更早地把分析逻辑抛成异常。
     if (typeof inputText !== 'string' || !inputText) {
       return new Response(
         JSON.stringify({

@@ -68,9 +68,7 @@ const VALID_SECTIONS: readonly string[] = [...SECTIONS, OTHER_SECTION];
  * `{scoreId}/{行 id}.pdf`（uuid），文件名怎么算都撞不上，而那个「旧前端」
  * 也早就不在线上（#286 已部署）。也就是说**这段兜底今天不再是承重结构**。
  *
- * 留着它是因为序号让分谱文件名自解释（`小提琴_1.pdf` 好过 `小提琴.pdf`），
- * 且**删它会牵动 `ambiguous-violin` 那道弃权**（那条守的正是「小提琴分不出序号」，
- * 而它原本要防的静默覆盖已经不成立）。那是一次独立的取舍，不塞进本次改动里。
+ * 留着它是因为序号让分谱文件名自解释（`小提琴_1.pdf` 好过 `小提琴.pdf`）。
  *
  * ⚠️ **它的优先级也变了**：现在是「模型给了合法号就采信模型，这里只在模型一个号都没给时兜底」，
  * **不再覆盖模型输出**。覆盖会把信息压掉 —— `Violin_1,_2.pdf` 会被压成 `[1]`，
@@ -80,29 +78,6 @@ const VIOLIN_SUB_PART: Record<string, number> = {
   第一小提琴: 1,
   第二小提琴: 2,
 };
-
-/**
- * 乐器名「看着就是小提琴」。用于 buildAnalysis 末尾那道兜底：
- * 序号本来有**两个**来源 —— 模型自己给的 `subParts`，或由声部名（`VIOLIN_SUB_PART`）推出来。
- * 声部名不守词表、模型又一个号都没给时，两处都空，就再没有依据了 ——
- * 这时候宁可弃权让用户手填，也不要猜一个序号出来。
- * 中提琴 / 大提琴 / 低音提琴都不含这些词，不会被误判。
- *
- * 匹配前先过 `normalizeForMatch`，所以全角（`Ｖｉｏｌｉｎ`）、大小写、空格标点
- * 都会被归到同一形式，不需要 `i` 标志。重音字母 NFKC 不折叠，所以 `violín`
- * 单独列出来。
- *
- * `violon(?!c)` 那个否定环视是必须的：法语的提琴是 `violon`、大提琴是
- * `violoncelle`，只差一个后缀 —— 不加环视会把**每一份大提琴**都误判成小提琴
- * 而弃权（`Violoncello` 同理）。这与「不敢用 `viol` 是因为会吃掉 `Viola`」是同一类坑。
- *
- * ⚠️ 这是一张**网**，不是分类器 —— 认不出某种外文写法，兜底就会漏。
- *
- * ⚠️ 再说一次（同 `VIOLIN_SUB_PART` 那段）：它守的「两支撞成同一条路径」**今天已不可能**
- * —— 存储键早就是 `{scoreId}/{行 id}.pdf`（uuid），与文件名无关。所以这道网现在是
- * 双保险而不是承重墙；它真正的作用退化成「分不出序号就别猜」。
- */
-const VIOLIN_LIKE = /小提琴|viol[ií]n|violon(?!c)|скрипка/;
 
 /**
  * 韩文填充符。它们的 Unicode 类别是 `Lo`（字母），会被下面的 `\p{L}` 留下来，
@@ -118,13 +93,10 @@ const BLANK_LETTERS = /[\u{115F}\u{1160}\u{3164}\u{FFA0}]/gu;
  * 这一步收窄 OCR 常见的形式差异，避免真引文被误判成伪造引文。
  * 然后只保留字母与数字 —— 一次剥掉空白、标点、符号，以及 `\p{Cf}`（零宽空格、
  * 软连字符、BOM）、`\p{Cc}`（控制字符）、`\p{Mn}`（组合记号）这些看不见的字符。
- * 不剥的话，两个零宽空格就能凑够长度冒充引文，把证据门整个骗过去。
+ * 不剥的话，两个零宽空格就能凑够长度冒充引文。
  *
  * 不做归一化就直接比较同样不行 —— OCR 与模型抄写常在空格、连字符、大小写上
  * 不一致（`Horn_2` / `Horn 2` / `HORN-2` 是同一件事）。数字必须保留：分声部号是有意义的证据。
- *
- * ⚠️ 必须定义在 NON_ANSWER_* 之前：那些常量在模块加载时就调用它，
- * 而 `const` 没有提升 —— 放到后面会撞 TDZ。
  */
 export function normalizeForMatch(s: string): string {
   return s
@@ -132,50 +104,6 @@ export function normalizeForMatch(s: string): string {
     .toLowerCase()
     .replace(BLANK_LETTERS, "")
     .replace(/[^\p{L}\p{N}]/gu, "");
-}
-
-/**
- * 模型用来表示「答不出来」的说法。它们**不是**乐器名 —— 放过去会建出一个
- * 名叫 `无法判断` 的声部与 `无法判断.pdf` 写进库，正是 #12「背景 2」要消灭的
- * 那类结果（旧版的 "unknown" 哨兵就是在 temperature=0 的硬选行为下失效的）。
- *
- * ⚠️ 这是一张**网**，不是一道证明：自由文本无法被穷举，永远有下一个说法。
- * 真正的防线是「证据门 + 用户确认」，这里只兜住模型不守契约（prompt 规则 3
- * 要求这几种情况返回空串）时最可能吐出来的东西。
- *
- * 两个机制，各管一类：
- * - `EXACT` 精确匹配 —— 用于「无」「其他」这种太短、当子串会误伤真乐器名的词
- * - `STEMS` 子串匹配 —— 模型会把它们拼长（`未识别到` / `无法判断出来` /
- *   `不能确定`），精确匹配追不上
- *
- * 两者都先过 normalizeForMatch，因此大小写、空白、标点与全角变体
- * （`ＵＮＫＮＯＷＮ` / `Unknown.` / `u n k n o w n` / `N.A.`）命中同一项。
- */
-// 表项按**归一化后**的形式比较，所以写 "n/a" 与写 "na" 是同一项。
-// 纯标点（如 "?"）不必列 —— 归一化后成空串，isNonAnswer 开头就返回 true。
-const NON_ANSWER_EXACT = [
-  "unknown", "undefined", "null", "nan", "nil", "none", "n/a",
-  "无", "其他", "略",
-];
-
-const NON_ANSWER_STEMS = [
-  // 英文：词根形式让 `Unknown.` / `unknown instrument` 这类也能命中
-  "unknown", "undefined", "nil", "none",
-  // 中文：模型会把词根拼长（`未识别到` / `判断不出来`），精确匹配追不上
-  "无法", "不能", "未识别", "未知", "不明", "不确定", "待定", "不详",
-  "没有", "识别不", "判断不", "读不出", "看不出", "不清楚", "答不出",
-  "无乐器", "未标注", "未注明",
-];
-
-const NON_ANSWER_EXACT_SET = new Set(NON_ANSWER_EXACT.map(normalizeForMatch));
-const NON_ANSWER_STEM_LIST = NON_ANSWER_STEMS.map(normalizeForMatch);
-
-/** 这个字符串是不是「答不出来」而不是一个乐器名。 */
-function isNonAnswer(instrument: string): boolean {
-  const n = normalizeForMatch(instrument);
-  if (!n) return true;
-  if (NON_ANSWER_EXACT_SET.has(n)) return true;
-  return NON_ANSWER_STEM_LIST.some((stem) => n.includes(stem));
 }
 
 /**
@@ -202,6 +130,10 @@ const MIN_EVIDENCE_CHARS = 2;
  *
  * 只设长度、不做字符替换：`木琴/钟琴` 这种合称是 #12 验收标准里允许的写法，
  * 而后端没有立场去改写一个用户会看到的乐器名。
+ *
+ * ⚠️ **数的是码点，不是码元**（`[...s].length`）。用 `s.length` 的话，
+ * 星光平面字符（`𠀀` 占 2 个码元）会让上界凭空减半 —— 也就是同一个上界对两类字符
+ * 给出不同结果。判据不该与输入形态相关，所以按码点数。
  */
 const MAX_INSTRUMENT_CHARS = 64;
 
@@ -215,6 +147,10 @@ const MAX_INSTRUMENT_CHARS = 64;
  *
  * **拦下让用户手填，而不是替换字符**：`木琴/钟琴` 这种合称是 #12 允许的写法，
  * 后端没有立场去改写一个用户会看到的乐器名 —— 而 `/` 只是多一层目录，不致命。
+ *
+ * ⚠️ **调用点判的是 NFKC 折叠后的形态**（存的是原始值）：`．.`（全角点 + 半角点）
+ * 折完就是 `..`，而这条正则本身是字面匹配、挡不住它。代价是顺带拒掉几个本来无害的
+ * 字符（`‥`/`…`/`︙`/`︰` 都会折出点），可接受 —— 那几种写法在乐器名里本来也不该出现。
  */
 const ILLEGAL_IN_INSTRUMENT = /\.\.|\p{Cc}|\p{Cf}/u;
 
@@ -245,31 +181,68 @@ export interface Analysis {
   /** 弃权原因，仅在 instrument 为空串时出现 */
   abstainReason?: string;
   /**
+   * 引文能不能在原文里找到。
+   *
+   * ⚠️ **这是信号，不是门**（用户 2026-09-25 定：弃权是最后手段）。找不到时**照样采用**
+   * 模型的答案，只把这个事实交给前端提示用户核对。此前它是一道**弃权门**
+   * （`evidence-not-in-source`），代价是模型把引文翻译成中文、或 OCR 把引文打花时，
+   * 一个本来可用的答案被整条丢掉 —— 而弃权在这条链路里不是「安全」，是「什么都没做」，
+   * 还会把这份文件推进分段（按页烧 OCR）。
+   */
+  evidenceFound: boolean;
+
+  /**
    * 这一页是不是**总谱**（多个乐器并列、多行谱表）。
    *
    * **必须在「空乐器 → 弃权」之前判定**：没有任何单一乐器**正是总谱的特征**，
    * 按原有顺序走，模型的正确回答会被 `abstain("empty-instrument")` 当成「答不出来」丢掉 ——
-   * 总谱就永远判不出来（这是本轮实现里最容易写错的一处）。
+   * 总谱就永远判不出来（2026-09-25 那次改动里最容易写错的一处）。
    */
   isFullScore: boolean;
+  /**
+   * 主声部之外，这份谱**还要落到**哪几个声部。恒为数组（没有额外声部时是 `[]`）。
+   *
+   * 起因是一类**一个分部、跨两个声部、又不能切**的谱：贝多芬的 `Violoncello e Basso`
+   * 是低音提琴与大提琴共用的那一份（低音提琴低八度跟大提琴走），**每一页页眉都是
+   * 同一行** —— 没有任何页边界可找，所以分段救不了它，而两个声部**都得拿到整份**
+   * （硬切成两段的结果是两个声部各拿到一半的谱）。
+   *
+   * 表达方式是**两行**：同一份谱在 `sheet_music_files` 里落成两行，各自有自己的
+   * `part_id` 与 `file_name`，于是两个声部的分组里都看得到它。
+   * 这个字段只是把「要落哪几个声部」这件事告诉调用方 —— **存储对象由调用方负责，
+   * 而且必须每行一个**：详情页删除时是**先删对象再删行**，两行共用对象的话，
+   * 删掉一行会把另一行还在用的 PDF 一起删掉（详情页看着完好、下载 404）。
+   * （前端 `sections.ts` 与 `upload-modal.tsx` 的 `uploadOne` 里记着同一条。）
+   *
+   * ⚠️ **与 `subParts` 是两回事**，别混：`subParts` 是**同一个声部**内的分声部号
+   * （`Horn_1,_2,_3,_4` → `[1,2,3,4]`，四个号都归圆号声部）；`extraSections` 是
+   * **不同的声部**（大提琴 + 低音提琴）。所以「同一件乐器的多个分声部」不该写进这里。
+   *
+   * ⚠️ 与 `subPartsRaw` / `sectionRaw` 不同，这个字段**没有 Raw 信号**：非法元素直接
+   * 丢弃。理由它不是「模型给了但我们读不懂」（那种要用户手填），而是「模型多写了一个
+   * 词」—— 丢掉的只是一个多余的目的地，主声部不受影响，界面上也能手工补。
+   *
+   * ⚠️ **保留模型给的顺序、不排序**（理由见 `parseExtraSections`）。调用方按这个顺序
+   * 依次建 part 与文件行，所以顺序是有后果的，不是展示细节。
+   */
+  extraSections: string[];
 }
 
 /**
  * evidence 是否真的能在输入文本里找到。
  *
- * 这是把「证据不足必须弃权」从 prompt 口号变成**代码机制**的地方。
- * temperature=0 下模型会硬选一个最接近的而不弃权（见 #12 第 2 点），
- * 光在 prompt 里写规则拦不住 —— 实测 `unknown` 几乎从不出现。
+ * 用来算 `evidenceFound` —— **信号，不是门**（2026-09-25 改）：
+ * 引文找不到时仍然采用模型的答案，只把这个事实交给前端提示用户核对。
+ * 此前它是一道弃权门，代价是模型把引文翻译成中文、或 OCR 把引文打花时，
+ * 一个本来可用的答案被整条丢掉 —— 而弃权在这条链路里不是「安全」，是「什么都没做」。
  *
  * ⚠️ 它判的是「引文**存在于**输入」而非「引文**支撑**结论」。具体到最松的一例：
  * 调用方（pkuso-web upload-modal.tsx）会把文件名与 OCR 文本拼成
- * `文件名: X\nOCR 文本: Y` 再发过来，于是模型抄 `OCR 文本` 这四个字就能通过。
- * 契约只要求「能在输入里找到」，且后端没有立场去剥调用方拼的标签
- * （那是给调用方格式打指纹，比这个弱点更脆）。
- * 真正的收紧手段是 #283 让前端分开传两个字段，而不是拼成一段。
- *
- * 代价：OCR 把引文打花时会误弃权。这个方向的错误是可接受的 ——
- * 用户手填一次乐器名，好过把模型猜的东西预填进界面、被用户当成「已确认」接受。
+ * `文件名: X\nOCR 文本: Y` 再发过来，于是模型抄那四个字的**标签**就能通过。
+ * 所以这个信号本身也偏松：它能判的只是「引文确实出现在输入里」，
+ * 判不了「这段引文支撑这个结论」。**别把它读成可靠性评分。**
+ * 后端没有立场去剥调用方拼的标签（那是给调用方格式打指纹，比这个弱点更脆）；
+ * 真正的收紧手段是让前端分开传两个字段，而不是拼成一段。
  */
 export function evidenceSupports(evidence: string, source: string): boolean {
   const needle = normalizeForMatch(evidence);
@@ -314,7 +287,7 @@ export const MAX_SUB_PARTS = 32;
  * - 罗马数字 / 中文数字：prompt 已明确要求阿拉伯数字，容忍它们等于同时维护两套解析。
  * - **只要有一个非空片段不是正整数，整个弃权** —— 部分解析比不解析更危险：
  *   `1,2,3支` 若丢掉 `3支` 得到 `[1,2]`，那是个**看起来对**的错答案，会一路写进文件名；
- *   而弃权只是让用户手填一次。与 `evidenceSupports` 是同一条哲学。
+ *   而弃权只是让用户手填一次。（这是**解析**的取舍 —— 数字本身没有语义可猜。）
  *
  * 返回升序去重的数组。
  *
@@ -371,22 +344,18 @@ export function parseSubParts(raw: unknown): number[] {
 /**
  * 模型**确实给了点什么**（而不是在表达「没有分声部」）。
  *
- * 判据是**黑名单**：只有明确表达「没有」的那几种才算没给，**其余一律算给了**。
- * 拿不准时偏向**报警** —— 多一条提示让用户看一眼，好过把真号静默丢掉
- * （那正是 `subPartsRaw` 要消灭的失败模式）。反过来写成白名单（只认 number /
- * 非空数组 / 非空字符串）会两头都错：
- *  · **漏报**：模型回 `true` 或 `{"1":1}`（`response_format: json_object` 下完全可达）
- *    被当成「没有」，号丢了且**没有任何信号**；
- *  · **误报**：模型用「无 / unknown / N/A」表达「没有」时照样挂告警，
- *    于是每条正常返回都带一条 —— 那条信号立刻失去意义。
+ * 判据：**只有「什么都没有」才算没给，其余一律算给了**。拿不准时偏向**报警** ——
+ * 多一条提示让用户看一眼，好过把真号静默丢掉（那正是 `subPartsRaw` 要消灭的失败模式）。
  *
- * 「没有」的用词直接复用 `isNonAnswer`：它本来就是为「模型在说答不出来」建的词表，
- * 两处各抄一份必然漂移。
+ * ⚠️ **不再用词表认「模型说没有」的说法**（`"无"` / `"none"` / `"unknown"` / `"N/A"`…）：
+ * 那是一条开放的用词清单，加不全，每加一个都可能误伤。改为只认**结构性**的「没有」——
+ * 字段缺失 / `null` / 空数组 / 空串。代价是模型用自然语言答「没有」时会多显示一次
+ * 「请核对分声部号」；prompt 规则 8 要求的本来就是数组，那属于它没照契约答。
  */
 function providedSubParts(raw: unknown): boolean {
   if (raw === null || raw === undefined) return false;
   if (Array.isArray(raw)) return raw.length > 0;
-  if (typeof raw === "string") return raw.trim() !== "" && !isNonAnswer(raw);
+  if (typeof raw === "string") return raw.trim() !== "";
   // number / boolean / object …：都不是「没有」的表达，算给了，交给 parseSubParts 去拒
   return true;
 }
@@ -436,16 +405,94 @@ export function abstain(reason: string, sectionRaw?: string): Analysis {
     subParts: [],
     evidence: "",
     isFullScore: false,
+    extraSections: [],
+    // 弃权时引文恒为空 —— 没有可核对的引文
+    evidenceFound: false,
     abstainReason: reason,
     ...(sectionRaw ? { sectionRaw } : {}),
   };
 }
 
 /**
- * 把 LLM 返回的 JSON 收敛成契约结果。任何一步不成立都走弃权，不做猜测性兜底。
+ * 额外声部的**个数**上界。
+ *
+ * 与 `MAX_SUB_PARTS` 同一个用途（防模型胡说），但量级小得多：真实的「共用分谱」
+ * 是两件乐器的事（`Violoncello e Basso`、`Celli e Bassi`）。给到 3 已经极宽松 ——
+ * 触顶说明模型把乐器清单当声部列表抄了。
+ *
+ * **要 export**（同 `MAX_SUB_PARTS`）：prompt 里那句「个数最多 N」由它插值出来，
+ * 抄一个数字进 prompt 的话，改了这里而 prompt 仍在对模型说旧值 —— 模型照着旧上界给、
+ * 代码按新上界截，两边静默拆台。`index.test.ts` 有一条断言把这条插值钉住。
+ * 前端 `sections.ts` 另有一份同名常量（跨仓没有自动同步机制，改的时候两边一起看）。
+ */
+export const MAX_EXTRA_SECTIONS = 3;
+
+/**
+ * 解析 `extraSections`。**只接受原样落在闭集里的声部名**，其余一律丢弃。
+ *
+ * ⚠️ **不能复用 `normalizeSection`**：那个函数把不认识的值折成「其他」并带上
+ * `sectionRaw`，那套语义是给**主声部**用的（落「其他」是合法退路，原值是个要看得见的
+ * 词表漂移信号）。额外声部这里折成「其他」等于**凭空造一个声部**出来 ——
+ * 而「其他」是弃权分组，不该有一份谱以「额外声部是其他」的身份落进去。
+ *
+ * 丢弃而不是弃权：丢的只是一个多余的目的地，主声部照常成立，且界面上可以手工补。
+ * 与 `parseSubParts` 的「有一项非法就整个弃权」相反 —— 那边弃权是为了不让一个
+ * **看起来对**的号写进文件名；这里没有对应的危险。
+ */
+export function parseExtraSections(raw: unknown, primary: string): string[] {
+  // 导出的函数自己兜住入参形态，不要让调用方的
+  // 类型假设变成运行时异常（`primary` 声明成 `string`，但请求体是用户可控的 JSON）。
+  // 报错会让**整次分析**失败，而这里的语义是「算不出额外声部就一个都不给」。
+  if (typeof primary !== "string") return [];
+  // ⚠️ 主声部落「其他」时**一个额外声部都不收**。
+  //
+  // 「其他」是**弃权分组**：模型说「我认不出这是哪个声部」。而 `extraSections` 的语义是
+  // 「**除了**主声部，还落到哪几个」—— 主声部都没定下来，「除了」就没有立足点。
+  // 更要紧的是后果：主声部未知却照落一个**具体**声部，等于用同一次不确定的判读
+  // 往「低音提琴」组里塞一份文件，而用户在「其他」与「低音提琴」两处都会看到它。
+  // 宁可少落一处、让用户手填（界面上有「+ 声部」），也不要在不确定的基础上落库。
+  if (primary.trim() === OTHER_SECTION) return [];
+  // 总谱：它是「所有声部都在里面」，不是「一份谱落到某几个声部」—— 与前端
+  // `normalizeExtraSections` 逐条对应（那条判据在那边也是早返回）。
+  //
+  // ⚠️ 今天走不到这里：`buildAnalysis` 的总谱分支在**上一层**就直接写了
+  // `extraSections: []`，而这里拿到的 `section` 已经过 `normalizeSection`，
+  // **永远不可能是「总谱」**（它不在闭集里）。写成显式的，是为了让这个**导出的、
+  // 有单测的**函数自身成立 —— 否则哪天有人把它改成「先统一算 extraSections 再分叉」，
+  // 两侧就会静默分叉（界面上看得到 chip、落库却少一行，或反过来）。
+  if (primary.trim() === FULL_SCORE_SECTION) return [];
+  // 标量写成数组、数组写成标量，JSON 里两种都会发生，都接 —— 与 `parseSubParts` 同一条
+  // 规矩。判据**不能与输入形态相关**：`"低音提琴"` 与 `["低音提琴"]` 语义完全相同，
+  // 一个放行一个拒绝就是又一处形态相关的判据（`parseSubParts` 的注释里记着这条教训）。
+  const list = Array.isArray(raw) ? raw : [raw];
+  const out = new Set<string>();
+  for (const item of list) {
+    if (typeof item !== "string") continue;
+    const s = item.trim();
+    // 「总谱」不在 VALID_SECTIONS 里（它不是声部），自动挡下；
+    // 「其他」在闭集里但是弃权分组，单独排除。
+    if (!VALID_SECTIONS.includes(s) || s === OTHER_SECTION) continue;
+    // 与主声部重复的丢掉：一份谱落到同一个声部两次会让前端插两行同名文件。
+    // ⚠️ 比的是 `primary.trim()` —— 上面两处早返回用的是 `primary.trim()`，而 `s`
+    // 也是 trim 过的；只有这里漏掉的话，主声部带空白就绕过这条去重（第 5 轮实测）。
+    if (s === primary.trim()) continue;
+    out.add(s);
+    // 上界按**收下的**个数判（与 MAX_SUB_PARTS 同一套：上界防的是最终落库的规模）
+    if (out.size >= MAX_EXTRA_SECTIONS) break;
+  }
+  // **保留模型给的顺序，不排序。** 与 `subParts` 相反（那边是数字，升序是自然的）：
+  // 声部名之间没有天然次序，而 `sort()` 比的是 UTF-16 码元 —— 中文会排成
+  // 「中提琴 → 低音提琴 → 大提琴」这种谁都不认得的顺序。而这个顺序**是有后果的**：
+  // 调用方按它依次建 part 与文件行，模型的顺序至少还反映谱面上的先后。
+  return [...out];
+}
+
+/**
+ * 把 LLM 返回的 JSON 收敛成契约结果。**只有形状不对才弃权** ——
+ * 语义判断交给模型（prompt 规则 0）与用户确认那一步，代码不再复核。
  *
  * @param parsed 已 JSON.parse 的模型输出
- * @param source 送给模型的原始文本 —— evidence 必须能在其中找到。
+ * @param source 送给模型的原始文本 —— 用来算 `evidenceFound`（信号，不参与弃权）。
  *   收 `unknown` 而非 `string`：请求体是用户可控的 JSON，值不一定是字符串，
  *   这里必须自己兜住而不是让调用方的类型假设变成运行时异常。
  */
@@ -461,37 +508,40 @@ export function buildAnalysis(parsed: unknown, source: unknown): Analysis {
   const isFullScore = record.isFullScore === true;
 
   // ⚠️ **总谱必须在下面那条「空乐器 → 弃权」之前判**：没有单一乐器正是总谱的特征。
-  // 证据仍要验（与防「编一个乐器名」同一条理由）：总谱那一页可引的是一串乐器名，
-  // 引不出来就是模型在猜 —— 弃权，交给人工标。
+  // 引文能不能在原文里找到 —— **信号，不是门**（见 `evidenceFound` 字段的说明）。
+  const evidenceFound =
+    typeof source === "string" && evidence !== "" && evidenceSupports(evidence, source);
+
   if (isFullScore) {
     if (typeof source !== "string") return abstain("bad-source", sectionRaw);
-    if (!evidence) return abstain("no-evidence", sectionRaw);
-    if (!evidenceSupports(evidence, source)) return abstain("evidence-not-in-source", sectionRaw);
     return {
       section: FULL_SCORE_SECTION,
       // 乐器名给「总谱」而不是空串：前端据此生成文件名「总谱.pdf」，且不会被
       // 「未识别出乐器」那道拦截挡下（总谱本来就没有单一乐器可填）
       instrument: FULL_SCORE_SECTION,
       subParts: [],
+      // 总谱是「所有声部都在里面」，不是「一份谱落到某几个声部」——
+      // 额外声部这个概念在这里没有意义（见 extraSections 的说明）。
+      extraSections: [],
       evidence,
       isFullScore: true,
+      evidenceFound,
     };
   }
 
   // 模型自己弃权了
   if (!instrument) return abstain("empty-instrument", sectionRaw);
-  // 模型用「答不出来」的说法冒充乐器名 —— 与空串同等对待
-  if (isNonAnswer(instrument)) return abstain("non-answer", sectionRaw);
-  if (instrument.length > MAX_INSTRUMENT_CHARS) return abstain("instrument-too-long", sectionRaw);
-  if (ILLEGAL_IN_INSTRUMENT.test(instrument)) return abstain("instrument-illegal-chars", sectionRaw);
+  if ([...instrument].length > MAX_INSTRUMENT_CHARS) return abstain("instrument-too-long", sectionRaw);
+  // ⚠️ 拿 **NFKC 折叠后**的形态去判 `..`：`．.`（全角点 + 半角点）折完就是 `..`，
+  // 而这条正则是字面匹配、挡不住它。**判折叠后的形态、存原始的** —— 乐器名本身的
+  // 全角/兼容字符是模型给的原文，不该被我们改写。
+  if (ILLEGAL_IN_INSTRUMENT.test(instrument.normalize("NFKC"))) {
+    return abstain("instrument-illegal-chars", sectionRaw);
+  }
 
   // source 类型不对就没法验证据。正常路径下 index.ts 已经拦掉了，
   // 这里是兜底：区分「请求非法」与「模型在编」，不要让后者替前者背锅。
   if (typeof source !== "string") return abstain("bad-source", sectionRaw);
-
-  // 引不出原文 = 在猜
-  if (!evidence) return abstain("no-evidence", sectionRaw);
-  if (!evidenceSupports(evidence, source)) return abstain("evidence-not-in-source", sectionRaw);
 
   const violinSubPart = VIOLIN_SUB_PART[section];
   const parsedSubParts = parseSubParts(record.subParts);
@@ -519,33 +569,20 @@ export function buildAnalysis(parsed: unknown, source: unknown): Analysis {
       ? describeRaw(record.subParts)
       : undefined;
 
-  // 兜底 —— 不依赖 prompt 是否被遵守。
-  //
-  // 小提琴是**唯一**「两支共享同一个 instrument 名」的声部。⚠️ 它原本的理由是
-  // 「序号一旦缺失，旧前端会给两份分谱算出同一条路径，`upsert:true` 让后传的静默
-  // 覆盖先传的」—— **这条已经不成立**（存储键是 `{scoreId}/{行 id}.pdf`，见上面
-  // `VIOLIN_SUB_PART` 那段）。它现在守的是**另一件事**：序号是这份谱唯一的身份标识，
-  // 猜错会让 `小提琴_2.pdf` 里装着第二小提琴的谱，而用户没有任何线索去发现。
-  //
   // 序号从两处取：模型自己给的 `subParts`（优先，见上），或声部名（`VIOLIN_SUB_PART`）。
-  // 两处都没有，就是真的分辨不出来 —— 宁可不识别（让用户手填），也不要猜一个。
+  // 两处都给不出时就是空数组 —— 交回给模型/用户，不再为此弃权（2026-09-25）。
   //
-  // ⚠️ 这里**不能**再加 `sectionRaw &&`：`sectionRaw` 只在 section 落闭集外时才出现，
-  // 而「其他」是闭集内的合法值、又正是 prompt 规则 3 指定的退路 ——
-  // 加了就把最常见的那条路漏掉了。（第一/第二小提琴的序号由
-  // VIOLIN_SUB_PART 给出 1/2、永不为空，所以放开这个条件不会误伤它们。）
-  //
-  // 判据只认「乐器名看着就是小提琴」，中提琴/大提琴/低音提琴不含「小提琴」三字。
-  if (subParts.length === 0 && VIOLIN_LIKE.test(normalizeForMatch(instrument))) {
-    return abstain("ambiguous-violin", sectionRaw);
-  }
-
+  // ⚠️ 这一段的旧版本描述的是一道 `ambiguous-violin` 弃权（已删），
+  // 其中的 `sectionRaw &&` 条件也随之作废 —— 别照着找那段 if。
   return {
     section,
     instrument,
     subParts,
+    // 主声部已经定了才轮到它 —— 由 section 反推，所以传的是上面那个**已校验**的 section
+    extraSections: parseExtraSections(record.extraSections, section),
     evidence,
     isFullScore: false,
+    evidenceFound,
     ...(sectionRaw ? { sectionRaw } : {}),
     ...(subPartsRaw ? { subPartsRaw } : {}),
   };
