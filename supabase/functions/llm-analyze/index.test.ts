@@ -218,6 +218,67 @@ Deno.test("上游 200 但 content 不是字符串：不抛、走弃权", async (
   eq([j.success, j.instrument, j.abstainReason], [true, "", "bad-json"], "应弃权");
 });
 
+Deno.test("file_name 单独传：类型不对一律 400（不静默降级）", async () => {
+  reset(() => new Response(OK_BODY, { status: 200 }));
+  for (const bad of [42, [], {}]) {
+    const res = await post({ ocr_text: SRC, file_name: bad });
+    eq(res.status, 400, `file_name=${JSON.stringify(bad)} 应 400`);
+  }
+  // 悄悄忽略一个类型不对的 `file_name` 会让 `evidenceFromFileName` 恒为假 ——
+  // 那是静默降级，正是这个仓库栽过的那类坑，所以这里不宽容。
+  eq(calls, 0, "类型不对的请求不该触达上游");
+
+  // `null` / 缺省 = **没有文件名**（段级调用就是这样），不是错误
+  eq((await post({ ocr_text: SRC, file_name: null })).status, 200, "null 视为没有文件名");
+  eq(calls, 1, "只有那一次触达上游");
+});
+
+Deno.test("只有文件名（没有 OCR 文本）：200，且 prompt 明说「只根据文件名」", async () => {
+  // 前端有一条**既有**的降级路：一页有内容的都没读到（全空白 / 渲染失败 / OCR 读不出）
+  // 时，只用文件名让模型判断。拆字段之前那种请求的 `ocr_text` 是 `"文件名: X"` 那一行
+  // （非空），拆完之后是空串 —— 若照旧 400，那条路会被整条打断。
+  reset(() => new Response(OK_BODY, { status: 200 }));
+  const res = await post({ ocr_text: "", file_name: "PMLASIA01165-13-Horn_2.pdf" });
+  eq(res.status, 200, "只有文件名应当放行");
+  eq(calls, 1, "应当触达上游一次");
+  eq(lastPrompt.includes("没有可用的识别文本"), true, "要明说没有识别文本");
+  eq(lastPrompt.includes("只根据上面的文件名"), true, "要指路到文件名");
+});
+
+Deno.test("两样都没有：400（判据是「至少给一样」，不是「ocr_text 非空」）", async () => {
+  reset(() => new Response(OK_BODY, { status: 200 }));
+  for (
+    const body of [
+      { ocr_text: "" },
+      { file_name: "" },
+      {},
+    ]
+  ) {
+    const res = await post(body);
+    eq(res.status, 400, `${JSON.stringify(body)} 应 400`);
+  }
+  eq(calls, 0, "不该触达上游");
+
+  // ⚠️ **只有空白**的 `ocr_text` 仍然放行 —— 这不是本次的判据（本次只把「必须非空」
+  // 松成「两样至少给一样」），而拆字段之前它也是放行的（旧判据 `!inputText` 对 "   "
+  // 为假）。顺手加严会是一次**无关的行为变更**，那正是本仓反复栽过的那类坑。
+  reset(() => new Response(OK_BODY, { status: 200 }));
+  eq((await post({ ocr_text: "   " })).status, 200, "只有空白仍然放行（既有行为，未变）");
+});
+
+Deno.test("文件名单独成段，且标明「不代表某一页」（#300）", async () => {
+  reset(() => new Response(OK_BODY, { status: 200 }));
+  await post({ ocr_text: SRC, file_name: "…--_Piccolo,_Flute_1,_2.pdf" });
+  eq(lastPrompt.includes("不代表某一页"), true, "要点明文件名不代表某一页");
+  eq(lastPrompt.includes("Piccolo,_Flute_1,_2.pdf"), true, "文件名仍要发给模型");
+
+  // 反向自检：**不给文件名时那句不该出现**（段级调用走的正是这条路，
+  // 而「三段都按文件名填成同一样号」就是被那句要防的事）。
+  reset(() => new Response(OK_BODY, { status: 200 }));
+  await post({ ocr_text: SRC });
+  eq(lastPrompt.includes("不代表某一页"), false, "没有文件名时不该出现那句");
+});
+
 Deno.test("请求体畸形：一律 400，且不泄漏内部错误原文", async () => {
   reset(() => new Response(OK_BODY, { status: 200 }));
   for (const body of ["", "null", "[]", "not json", JSON.stringify({ text: 42 }), JSON.stringify({})]) {
