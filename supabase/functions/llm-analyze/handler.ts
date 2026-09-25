@@ -189,14 +189,19 @@ export async function handler(req: Request): Promise<Response> {
     // 请求体不是合法 JSON 时别把 JS 解析器的原文回给前端
     //（`Unexpected end of JSON input` 对排查没帮助，还泄漏内部结构）。
     // body 是字面 `null` 时也走这里，不再让解构抛错。
-    let body: { text?: unknown; ocr_text?: unknown; file_name?: unknown } | null;
+    let body: { ocr_text?: unknown; file_name?: unknown } | null;
     try {
       body = await req.json();
     } catch {
       body = null;
     }
 
-    const inputText = body?.text || body?.ocr_text;
+    // ⚠️ **只认 `ocr_text`**（技术债 B4）：这里原来还有 `|| body?.text` 这个别名，是给
+    // 「文件名与 OCR 文本还没拆字段」那版前端（pkuso-web#300 之前）留的过渡。那版前端早已
+    // 不在线上，而别名本身有害 —— 两个字段名并存时「前端到底发了哪个」在协议上就说不清了；
+    // 更糟的是**测试里 15 处都在用旧名**，等于测试没在验真实契约。
+    // 现在发旧名会**响亮地** 400（见下面那句 error），而不是被悄悄认下。
+    const inputText = body?.ocr_text;
 
     /**
      * 文件名**单独一个字段**（pkuso-web#300）。
@@ -241,7 +246,7 @@ export async function handler(req: Request): Promise<Response> {
         JSON.stringify({
           success: false,
           error:
-            'text/ocr_text is required and must be a non-empty string (unless a non-empty file_name is provided)',
+            'ocr_text is required and must be a non-empty string (unless a non-empty file_name is provided)',
         }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );

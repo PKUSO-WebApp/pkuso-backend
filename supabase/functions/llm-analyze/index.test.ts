@@ -104,7 +104,7 @@ const html = (status: number) => new Response("<html>err</html>", { status });
 
 Deno.test("正常路径：平铺字段 + 只请求一次", async () => {
   reset(() => new Response(OK_BODY, { status: 200 }));
-  const res = await post({ text: SRC });
+  const res = await post({ ocr_text: SRC });
   const j = await res.json();
   eq(res.status, 200, "状态码");
   eq(calls, 1, "上游调用次数");
@@ -117,7 +117,7 @@ Deno.test("正常路径：平铺字段 + 只请求一次", async () => {
 
 Deno.test("prompt 里的分声部号上界由 MAX_SUB_PARTS 插值，不是手抄一份", async () => {
   reset(() => new Response(OK_BODY, { status: 200 }));
-  await post({ text: SRC });
+  await post({ ocr_text: SRC });
   // 抄一份数字进 prompt 的后果：改了常量而 prompt 仍在对模型说旧值 ——
   // 模型照旧上界给号、代码按新上界弃权，两边静默拆台（同 SECTION_LIST 的理由）。
   eq(lastPrompt.includes(`个数最多 ${MAX_SUB_PARTS}`), true, "上界要与常量一致");
@@ -129,7 +129,7 @@ Deno.test("prompt 里的额外声部上界由 MAX_EXTRA_SECTIONS 插值，不是
   // 与上一条同一条理由：抄一个数字进 prompt，改了常量而 prompt 仍在对模型说旧值 ——
   // 模型照旧上界给、代码按新上界截，两边静默拆台。
   reset(() => new Response(OK_BODY, { status: 200 }));
-  await post({ text: SRC });
+  await post({ ocr_text: SRC });
   eq(lastPrompt.includes(`个数最多 ${MAX_EXTRA_SECTIONS}`), true, "上界要与常量一致");
   // ⚠️ **两句的措辞一模一样，只有数字不同**（32 / 3），而 `"个数最多 3"` 是
   // `"个数最多 32"` 的子串 —— 所以光断那一句区分不出「插值没了」。
@@ -142,7 +142,7 @@ Deno.test("fetch 抛异常也要重试到底（网络故障是最该重试的一
   reset(() => {
     throw new TypeError("connection reset by peer");
   });
-  const res = await post({ text: SRC });
+  const res = await post({ ocr_text: SRC });
   const j = await res.json();
   eq(calls, 4, "重试次数");
   // **量的是「请求了多少毫秒」而不是「实际等了多久」**：base=1 → 1, 2, 4。
@@ -171,7 +171,7 @@ Deno.test("生产默认退避：基数 1000，且默认 sleep 真的等待", asy
 Deno.test("可重试的状态码：429 / 5xx", async () => {
   for (const status of [429, 500, 503]) {
     reset(() => html(status));
-    await post({ text: SRC });
+    await post({ ocr_text: SRC });
     eq(calls, 4, `HTTP ${status} 应重试满`);
     // ⚠️ 退避也要断言：**这条路上退避被改坏一点都不明显** —— 把它退回字面量 `1000`
     // 或整条 `await retry.sleep(...)` 删掉，`calls` 仍是 4（全绿），只是用例从毫秒
@@ -183,14 +183,14 @@ Deno.test("可重试的状态码：429 / 5xx", async () => {
 Deno.test("不可重试的状态码：401 / 404 / 400 只请求一次", async () => {
   for (const status of [401, 404, 400]) {
     reset(() => html(status));
-    await post({ text: SRC });
+    await post({ ocr_text: SRC });
     eq(calls, 1, `HTTP ${status} 不该重试`);
   }
 });
 
 Deno.test("2xx 但 body 解析不出来：值得重试（网关在成功码上塞错误页）", async () => {
   reset(() => new Response("<html>err</html>", { status: 200 }));
-  const res = await post({ text: SRC });
+  const res = await post({ ocr_text: SRC });
   const j = await res.json();
   eq(calls, 4, "200 + 非 JSON 应重试满");
   eq(/无法解析/.test(j.error), true, "报文要说无法解析");
@@ -198,12 +198,12 @@ Deno.test("2xx 但 body 解析不出来：值得重试（网关在成功码上�
 
 Deno.test("报文区分「无法解析」与「空响应」，不互相诬称", async () => {
   reset(() => new Response("null", { status: 200 }));
-  let j = await (await post({ text: SRC })).json();
+  let j = await (await post({ ocr_text: SRC })).json();
   eq(/空响应/.test(j.error), true, "字面 null 体 → 空响应");
   eq(/无法解析/.test(j.error), false, "不该说无法解析");
 
   reset(() => html(500));
-  j = await (await post({ text: SRC })).json();
+  j = await (await post({ ocr_text: SRC })).json();
   eq(/无法解析/.test(j.error), true, "HTML 体 → 无法解析");
   eq(/空响应/.test(j.error), false, "不该说空响应");
 });
@@ -212,12 +212,19 @@ Deno.test("上游 200 但 content 不是字符串：不抛、走弃权", async (
   reset(() =>
     new Response(JSON.stringify({ choices: [{ message: { content: 123 } }] }), { status: 200 })
   );
-  const res = await post({ text: SRC });
+  const res = await post({ ocr_text: SRC });
   const j = await res.json();
   eq(res.status, 200, "状态码");
   eq([j.success, j.instrument, j.abstainReason], [true, "", "bad-json"], "应弃权");
 });
 
+Deno.test("旧字段名 text 已经不再被接受：400（技术债 B4 删掉了那个别名）", async () => {
+  // 那个别名是给「文件名与 OCR 文本还没拆字段」那版前端留的过渡（pkuso-web#300 之前），
+  // 那版早已不在线上。删掉之后发旧名会 400 —— 这条钉住「不会有人悄悄把别名加回来」，
+  // 也顺带说明为什么这个函数**只**认 ocr_text（两个名字并存时协议上说不清前端发了哪个）。
+  const res = await post({ text: SRC });
+  eq(res.status, 400, "旧字段名要 400");
+});
 Deno.test("file_name 单独传：类型不对一律 400（不静默降级）", async () => {
   reset(() => new Response(OK_BODY, { status: 200 }));
   for (const bad of [42, [], {}]) {
@@ -299,7 +306,7 @@ Deno.test("缺 DEEPSEEK_API_KEY 时明确报错", async () => {
   Deno.env.delete("DEEPSEEK_API_KEY");
   try {
     reset(() => new Response(OK_BODY, { status: 200 }));
-    const res = await post({ text: SRC });
+    const res = await post({ ocr_text: SRC });
     const j = await res.json();
     eq(res.status, 500, "状态码");
     eq(/DEEPSEEK_API_KEY/.test(j.error), true, "报文");
