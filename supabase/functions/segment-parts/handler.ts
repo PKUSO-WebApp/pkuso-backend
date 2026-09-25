@@ -15,10 +15,19 @@ const MAX_PAGE_TEXT_CHARS = 200;
 /** 单次上游请求的上限。同 llm-analyze：不设的话一条挂住的连接会吃光整个预算 */
 const UPSTREAM_TIMEOUT_MS = 8000;
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-/** 退避基数。导出成**可变**对象只为测试（真等满 7 秒会让用例跑 40 秒以上） */
-export const retry = { baseDelayMs: 1000 };
+/**
+ * 退避基数。导出成**可变**对象只为测试（真等满 7 秒会让用例跑 40 秒以上）。
+ *
+ * ⚠️ `sleep` 也放在这里（2026-09-25）：退避的断言过去是**量墙钟**的 —— 桩里记
+ * `Date.now()` 差值再断言递增。本文件那条用例的注释自己就记着「实测踩过：
+ * backoffs 量到 [3,2,4]」，当时的应对是把基数从 1ms 抬到 20ms —— 那是**缓解不是解决**，
+ * 负载一上来照样可能颠倒，而它一红就会让**变异验证读错图**（一红就以为变异被抓住了）。
+ * 做成可注入之后断言变成「**请求的**毫秒数是不是 base×2^n」，纯值比较、不碰时钟。
+ */
+export const retry = {
+  baseDelayMs: 1000,
+  sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+};
 
 function describeUpstreamError(err: unknown): string {
   return err instanceof Error ? `${err.name}: ${err.message}` : String(err);
@@ -204,7 +213,7 @@ export async function handler(req: Request): Promise<Response> {
       } catch (err) {
         lastError = `上游请求失败（${describeUpstreamError(err)}）`;
         if (attempt === maxRetries) break;
-        await sleep(retry.baseDelayMs * Math.pow(2, attempt));
+        await retry.sleep(retry.baseDelayMs * Math.pow(2, attempt));
         continue;
       }
 
@@ -264,7 +273,7 @@ export async function handler(req: Request): Promise<Response> {
         response.status === 429 || response.status >= 500 || (response.ok && unparsable);
 
       if (!isRetryable || attempt === maxRetries) break;
-      await sleep(retry.baseDelayMs * Math.pow(2, attempt));
+      await retry.sleep(retry.baseDelayMs * Math.pow(2, attempt));
     }
 
     return json(

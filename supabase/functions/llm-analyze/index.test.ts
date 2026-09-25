@@ -2,8 +2,16 @@ import { handler, retry } from "./handler.ts";
 import { MAX_EXTRA_SECTIONS, MAX_SUB_PARTS } from "./analyze.ts";
 
 // 把退避压到 1ms：真等 1s/2s/4s 会让整套用例跑 40 秒以上，没人愿意跑就等于没有保护。
-// 退避的**比例**由 `retry.baseDelayMs` 的默认值保证，见下面那条断言。
+// ⚠️ 光调小基数**不够**（2026-09-25）：退避要**被观测到**才能断言，而过去是靠桩里记
+// `Date.now()` 差值 —— 1ms 分辨率 + `setTimeout` 抖动，负载下会量出 `[3,2,4]`。
+// 那不只是偶尔红：它会让**变异验证读错图**（一红就以为变异被抓住了）。
+// 现在把 `sleep` 整个换掉：**只记录被请求的毫秒数、立刻 resolve** —— 纯值比较，不碰时钟。
 retry.baseDelayMs = 1;
+let delays: number[] = [];
+retry.sleep = (ms: number) => {
+  delays.push(ms);
+  return Promise.resolve();
+};
 
 /**
  * 跑法：deno test --allow-env=DEEPSEEK_API_KEY supabase/functions/llm-analyze/
@@ -34,8 +42,6 @@ const OK_BODY = JSON.stringify({
 const SRC = "文件名: x.pdf\nOCR 文本: Allegretto";
 
 let calls = 0;
-let backoffs: number[] = [];
-let lastAt = 0;
 /** 最近一次上游请求里的 prompt 正文 —— 用来断言 prompt 与代码常量没有漂移 */
 let lastPrompt = "";
 let respond: (call: number) => Response | Promise<Response> = () =>
@@ -55,9 +61,6 @@ globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
   } catch {
     lastPrompt = "";
   }
-  const now = Date.now();
-  if (lastAt) backoffs.push(now - lastAt);
-  lastAt = now;
   // 每次上游请求都必须带超时信号 —— 否则一条挂住的连接会吃光整个预算。
   // 这条断言放在桩里，**每条用例都会走到**：将来谁把 signal 去掉，这里会立刻红。
   // （超时时长本身没法在这里跑：4 次 × 8s 会让用例慢 30 秒以上。）
@@ -70,8 +73,7 @@ globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
 const reset = (fn: typeof respond) => {
   respond = fn;
   calls = 0;
-  backoffs = [];
-  lastAt = 0;
+  delays = [];
   lastPrompt = "";
 };
 
@@ -135,9 +137,11 @@ Deno.test("fetch 抛异常也要重试到底（网络故障是最该重试的一
   const res = await post({ text: SRC });
   const j = await res.json();
   eq(calls, 4, "重试次数");
-  eq(backoffs.length, 3, "两次重试之间都要退避");
-  // 退避必须递增（本用例里 base=1ms，只验单调性）
-  eq(backoffs[1] >= backoffs[0] && backoffs[2] >= backoffs[1], true, "退避应递增");
+  // **量的是「请求了多少毫秒」而不是「实际等了多久」**：base=1 → 1, 2, 4。
+  // 逐位相等同时钉住三件事：退避真的发生了、按 2^n 递增、**走的是 `retry.baseDelayMs`
+  // 而不是字面量**（2026-09-25 之前这条路上写死了 `1000`，把基数调小对它无效 ——
+  // 那条用例因此真等了 1s/2s/4s，跑 7 秒，而注释还写着「base=1ms」）。
+  eq(delays, [1, 2, 4], "退避应按 base × 2^n 递增");
   eq(/after 4 attempt/.test(j.error), true, "报文要带真实次数");
   eq(/connection reset/.test(j.error), true, "报文要含上游错误");
 });

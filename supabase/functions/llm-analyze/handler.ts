@@ -28,15 +28,22 @@ const SECTION_LIST = SECTIONS.join("、");
  */
 const UPSTREAM_TIMEOUT_MS = 8000;
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
 /**
  * 退避基数（毫秒）。第 n 次重试前等 `baseDelayMs * 2^n` —— 默认 1s / 2s / 4s。
  *
  * 导出成**可变**对象只为测试：真等满 7 秒退避会让用例跑 40 秒以上，
  * 那样没人愿意跑它，等于没有回归保护。生产代码不要动这个值。
+ *
+ * ⚠️ `sleep` 也放在这里（2026-09-25）：**退避的断言过去是量墙钟的** —— 桩里记
+ * `Date.now()` 差值再断言递增，而 `Date.now()` 只有 1ms 分辨率、`setTimeout`
+ * 本身也有抖动，负载下会量到 `[3,2,4]` 而红。那不只是「偶尔烦人」：它会让
+ * **变异验证读错图**（一红就以为变异被抓住了）。做成可注入之后，断言变成
+ * 「**请求的**毫秒数是不是 base×2^n」—— 纯值比较，不碰时钟；用例也从 7 秒变瞬时。
  */
-export const retry = { baseDelayMs: 1000 };
+export const retry = {
+  baseDelayMs: 1000,
+  sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+};
 
 /** fetch 抛出来的错误 —— 只取类型与消息，这类是网络层信息，给前端看没有风险。 */
 function describeUpstreamError(err: unknown): string {
@@ -243,7 +250,11 @@ export async function handler(req: Request): Promise<Response> {
       } catch (err) {
         lastError = `上游请求失败（${describeUpstreamError(err)}）`;
         if (attempt === maxRetries) break;
-        await sleep(1000 * Math.pow(2, attempt));
+        // ⚠️ 走 `retry.baseDelayMs` 而**不是字面量 1000**（2026-09-25 改）：与下面那条
+        // 「可重试状态码」的路保持一致，否则测试把基数调小时这一条不跟随 —— 实测它因此
+        // 真等了 1s/2s/4s，那条用例跑了 7 秒，而用例注释还写着「base=1ms」。
+        // 生产默认值就是 1000，两者取值一字不差。
+        await retry.sleep(retry.baseDelayMs * Math.pow(2, attempt));
         continue;
       }
 
@@ -312,7 +323,7 @@ export async function handler(req: Request): Promise<Response> {
       }
 
       // 指数退避：base × 2^attempt —— 默认 1s, 2s, 4s
-      await sleep(retry.baseDelayMs * Math.pow(2, attempt));
+      await retry.sleep(retry.baseDelayMs * Math.pow(2, attempt));
     }
 
     // 所有重试均失败
