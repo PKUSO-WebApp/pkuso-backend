@@ -6,6 +6,13 @@ import { handler, retry } from "./handler.ts";
 // 当时的应对是把基数从 1ms 抬到 20ms —— 那是**缓解不是解决**，负载一上来照样颠倒，
 // 而它一红就会让**变异验证读错图**（一红就以为变异被抓住了）。
 // 现在把 `sleep` 整个换掉：**只记录被请求的毫秒数、立刻 resolve**，断言变成纯值比较。
+// ⚠️ **覆盖之前先各抓一份生产默认值** —— 下面那条用例要在它们上面断言。
+// 覆盖之后套件里就没有任何东西会走默认实现了。对抗测试实测：把默认 `sleep` 改成 no-op、
+// 或把 `baseDelayMs` 改成 4，**覆盖前那版套件照样全绿**；而改动**之前**，no-op 那个变异
+// 会让本文件确定性变红（旧断言量的是真实耗时，no-op 时差值为 0）。
+const realBase = retry.baseDelayMs;
+const realSleep = retry.sleep;
+
 retry.baseDelayMs = 1;
 let delays: number[] = [];
 retry.sleep = (ms: number) => {
@@ -209,12 +216,27 @@ Deno.test("fetch 抛异常也要重试到底（网络故障是最该重试的一
   eq(/connection reset/.test(j.error), true, "报文要含上游错误");
 });
 
+Deno.test("生产默认退避：基数 1000，且默认 sleep 真的等待", async () => {
+  // ⚠️ 这条断言的是**顶层覆盖之前**抓下来的那两个默认值（本文件其余用例走的都是桩）。
+  // 它是「退避的实现被改坏时有人会红」的唯一保证 —— 少了它，把默认 `sleep` 改成
+  // no-op（退避消失）或把基数改成任何值，套件都全绿。
+  eq(realBase, 1000, "baseDelayMs 的生产默认值");
+  const t0 = performance.now();
+  await realSleep(20);
+  // `setTimeout` 不会**提前**触发，所以下界是可靠的；no-op 则恒为 0
+  eq(performance.now() - t0 >= 15, true, "默认 sleep 必须真的等");
+});
+
 Deno.test("可重试的状态码：429 / 5xx 打满四次", async () => {
   for (const status of [429, 500, 503]) {
     reset(() => new Response("upstream boom", { status }));
     const res = await post({ pages: PAGES, pageCount: 4 });
     eq(res.status, 400, `${status} 最终回 400`);
     eq(calls, 4, `${status} 应重试到 4 次`);
+    // ⚠️ 退避也要断言：**这条路上退避被改坏一点都不明显** —— 把它退回字面量 `1000`
+    // 或整条 `await retry.sleep(...)` 删掉，`calls` 仍是 4（全绿），只是用例从毫秒
+    // 变成几十秒（三档状态码 × 7 秒）。「又贵又静默」正是本 PR 要消灭的形态。
+    eq(delays, [1, 2, 4], `${status} 的退避应按 base × 2^n 递增`);
   }
 });
 

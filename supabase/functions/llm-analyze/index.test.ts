@@ -6,6 +6,14 @@ import { MAX_EXTRA_SECTIONS, MAX_SUB_PARTS } from "./analyze.ts";
 // `Date.now()` 差值 —— 1ms 分辨率 + `setTimeout` 抖动，负载下会量出 `[3,2,4]`。
 // 那不只是偶尔红：它会让**变异验证读错图**（一红就以为变异被抓住了）。
 // 现在把 `sleep` 整个换掉：**只记录被请求的毫秒数、立刻 resolve** —— 纯值比较，不碰时钟。
+// ⚠️ **覆盖之前先各抓一份生产默认值** —— 下面那条用例要在它们上面断言。
+// 覆盖之后套件里就没有任何东西会走默认实现了（`sleep` 被换成桩，其余测试文件都不
+// import `handler.ts`）。对抗测试实测：把默认 `sleep` 改成 no-op、或把 `baseDelayMs`
+// 改成 4，**覆盖前那版套件照样 127 全绿** —— 而「退避彻底消失」意味着 4 次重试在毫秒内
+// 打完，对 429 限流的上游等于全灭。
+const realBase = retry.baseDelayMs;
+const realSleep = retry.sleep;
+
 retry.baseDelayMs = 1;
 let delays: number[] = [];
 retry.sleep = (ms: number) => {
@@ -145,14 +153,30 @@ Deno.test("fetch 抛异常也要重试到底（网络故障是最该重试的一
   eq(/after 4 attempt/.test(j.error), true, "报文要带真实次数");
   eq(/connection reset/.test(j.error), true, "报文要含上游错误");
 });
-// 注：`retry.baseDelayMs` 的生产默认值（1000）在这里断言不了 —— Deno 会缓存模块，
-// 读不到「没被本文件改过」的那一份。它在 handler.ts 里就一行，改它需要一个理由。
+Deno.test("生产默认退避：基数 1000，且默认 sleep 真的等待", async () => {
+  // ⚠️ 这条断言的是**顶层覆盖之前**抓下来的那两个默认值（本文件其余用例走的都是桩）。
+  // 它是「退避的实现被改坏时有人会红」的唯一保证 —— 少了它，把默认 `sleep` 改成
+  // no-op（退避消失）或把基数改成任何值，套件都全绿。
+  eq(realBase, 1000, "baseDelayMs 的生产默认值");
+  const t0 = performance.now();
+  await realSleep(20);
+  // `setTimeout` 不会**提前**触发，所以下界是可靠的；no-op 则恒为 0
+  eq(performance.now() - t0 >= 15, true, "默认 sleep 必须真的等");
+});
+// ⚠️ 这里原先写着「生产默认值断言不了 —— Deno 会缓存模块，读不到没被改过的那一份」——
+// **那句是错的**：Deno 按**测试文件**隔离模块实例，另起一个只 import `handler.ts` 的
+// 文件、或在覆盖前先抓一份，都能断言（实测：改掉默认值，两种写法都会红）。
+// 错的结论比没有结论更糟 —— 它会让下一个人以为这个缺口「原理上关不上」而放弃它。
 
 Deno.test("可重试的状态码：429 / 5xx", async () => {
   for (const status of [429, 500, 503]) {
     reset(() => html(status));
     await post({ text: SRC });
     eq(calls, 4, `HTTP ${status} 应重试满`);
+    // ⚠️ 退避也要断言：**这条路上退避被改坏一点都不明显** —— 把它退回字面量 `1000`
+    // 或整条 `await retry.sleep(...)` 删掉，`calls` 仍是 4（全绿），只是用例从毫秒
+    // 变成几十秒（三档状态码 × 7 秒，实测 42 秒）。「又贵又静默」正是本 PR 要消灭的形态。
+    eq(delays, [1, 2, 4], `HTTP ${status} 的退避应按 base × 2^n 递增`);
   }
 });
 
