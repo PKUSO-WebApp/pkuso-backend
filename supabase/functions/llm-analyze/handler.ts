@@ -240,13 +240,17 @@ export async function handler(req: Request): Promise<Response> {
     // 读到的字太少）时，**只用文件名**让模型判断（那条路的注释里就写着「body 里只有文件名」）。
     // 拆字段之前，那种请求的 `ocr_text` 是 `"文件名: X"` 那一行，所以非空；
     // 拆完之后它会是空串 —— 若这里照旧 400，那条**既有**的降级路会被整条打断。
-    // 判据因此改成「两样至少给一样」，而不是「`ocr_text` 必须非空」。
+    // 判据因此是「`ocr_text` **必须是字符串**」+「两样至少给一样」，而不是「`ocr_text` 必须非空」。
+    // ⚠️ 两句话都要：**字段整个缺失**（不等于空串）仍然 400 —— 只给文件名、连 `ocr_text` 键都不发
+    // 的请求会被拦下。今天没有这样的调用方（pkuso-web 无条件发 `ocr_text`，最差是空串），
+    // 但报文里那句「unless a non-empty file_name is provided」说的是**空串**那一种，
+    // 别读成「可以不发这个字段」。
     if (typeof inputText !== 'string' || (!inputText && !fileName)) {
       return new Response(
         JSON.stringify({
           success: false,
           error:
-            'ocr_text is required and must be a non-empty string (unless a non-empty file_name is provided)',
+            'ocr_text must be a string, and must be non-empty unless a non-empty file_name is provided',
         }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );

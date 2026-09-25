@@ -225,7 +225,9 @@ Deno.test("旧字段名 text 已经不再被接受：400（那个别名已删除
   const res = await post({ text: SRC });
   eq(res.status, 400, "旧字段名要 400");
 });
-Deno.test("file_name 单独传：类型不对一律 400（不静默降级）", async () => {
+Deno.test("file_name 类型不对：一律 400（不静默降级）", async () => {
+  // ⚠️ 用例名里的「单独传」原来指的是「单独一个字段发」（与 OCR 文本分开发），
+  // 但这里的请求**每条都带 `ocr_text`** —— 真正「只发 file_name」的形状在下面那条用例里。
   reset(() => new Response(OK_BODY, { status: 200 }));
   for (const bad of [42, [], {}]) {
     const res = await post({ ocr_text: SRC, file_name: bad });
@@ -252,13 +254,16 @@ Deno.test("只有文件名（没有 OCR 文本）：200，且 prompt 明说「�
   eq(lastPrompt.includes("只根据上面的文件名"), true, "要指路到文件名");
 });
 
-Deno.test("两样都没有：400（判据是「至少给一样」，不是「ocr_text 非空」）", async () => {
+Deno.test("两样都没有：400（判据是「ocr_text 是字符串」+「至少给一样」）", async () => {
   reset(() => new Response(OK_BODY, { status: 200 }));
   for (
     const body of [
       { ocr_text: "" },
       { file_name: "" },
       {},
+      // ⚠️ **字段整个缺失**（不是空串）也要 400：`ocr_text` 是必填的字符串，只有文件名不够。
+      // 报文里那句「unless a non-empty file_name is provided」说的是**空串**那一种（见上一条用例）。
+      { file_name: "x.pdf" },
     ]
   ) {
     const res = await post(body);

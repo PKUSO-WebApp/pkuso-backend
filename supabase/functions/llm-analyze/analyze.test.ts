@@ -393,8 +393,10 @@ Deno.test("parseSubParts：原型链上的键不是分声部号", () => {
 });
 
 Deno.test("source 类型不对：走弃权而不是抛异常", () => {
-  // 请求体 {"text": 42} 会让 source 不是字符串。
-  // 必须与「模型在编」区分开，否则 abstainReason 说谎。
+  // `buildAnalysis` 是纯函数，`source` 的类型由调用方保证 —— 这里钉的是**万一不是字符串**
+  // 时的分工：走弃权而不是抛。必须与「模型在编」区分开，否则 abstainReason 说谎。
+  // （原文写的是「请求体 {"text": 42} 会让 source 不是字符串」，两处都不成立：那个请求在
+  // handler 里就被 400 掉了，根本到不了这里；而 `text` 这个字段名也已经删掉。）
   for (const bad of [42, null, undefined, {}, [], true]) {
     const r = buildAnalysis({ section: "圆号", instrument: "圆号", evidence: "Corno" }, bad);
     eq(r.abstainReason, "bad-source", `source=${JSON.stringify(bad)}`);
