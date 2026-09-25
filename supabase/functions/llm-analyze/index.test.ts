@@ -218,10 +218,10 @@ Deno.test("上游 200 但 content 不是字符串：不抛、走弃权", async (
   eq([j.success, j.instrument, j.abstainReason], [true, "", "bad-json"], "应弃权");
 });
 
-Deno.test("旧字段名 text 已经不再被接受：400（技术债 B4 删掉了那个别名）", async () => {
-  // 那个别名是给「文件名与 OCR 文本还没拆字段」那版前端留的过渡（pkuso-web#300 之前），
-  // 那版早已不在线上。删掉之后发旧名会 400 —— 这条钉住「不会有人悄悄把别名加回来」，
-  // 也顺带说明为什么这个函数**只**认 ocr_text（两个名字并存时协议上说不清前端发了哪个）。
+Deno.test("旧字段名 text 已经不再被接受：400（那个别名已删除）", async () => {
+  // 别名**从来没有真实调用方**（pkuso-web 一直发 `ocr_text`）。删除之后发旧名应当 400 ——
+  // 这条钉住「不会有人悄悄把别名加回来」，也顺带说明为什么这个函数**只**认 ocr_text
+  // （两个名字并存时，协议上说不清前端到底发了哪个）。
   const res = await post({ text: SRC });
   eq(res.status, 400, "旧字段名要 400");
 });
@@ -288,7 +288,10 @@ Deno.test("文件名单独成段，且标明「不代表某一页」（#300）",
 
 Deno.test("请求体畸形：一律 400，且不泄漏内部错误原文", async () => {
   reset(() => new Response(OK_BODY, { status: 200 }));
-  for (const body of ["", "null", "[]", "not json", JSON.stringify({ text: 42 }), JSON.stringify({})]) {
+  // ⚠️ 里面那条 `{ ocr_text: 42 }` 是这个列表里**唯一**在验「类型不对」的（其余都是
+  // 「不是合法 JSON 对象」）—— 别把它换成别的字段名，否则 `typeof inputText !== 'string'`
+  // 那一支就没人验了。
+  for (const body of ["", "null", "[]", "not json", JSON.stringify({ ocr_text: 42 }), JSON.stringify({})]) {
     const res = await post(body);
     const j = await res.json();
     eq(res.status, 400, `「${body}」状态码`);
