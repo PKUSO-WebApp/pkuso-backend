@@ -1054,7 +1054,7 @@ export type Database = {
       }
     }
     Enums: {
-      attendanceStatus: "present" | "late" | "absent" | "excused"
+      attendanceStatus: "present" | "late" | "absent" | "excused" | "exempt"
       leaveStatus:
         | "pending"
         | "approved"
@@ -1192,7 +1192,7 @@ export type CompositeTypes<
 export const Constants = {
   public: {
     Enums: {
-      attendanceStatus: ["present", "late", "absent", "excused"],
+      attendanceStatus: ["present", "late", "absent", "excused", "exempt"],
       leaveStatus: ["pending", "approved", "rejected", "withdrawn", "canceled"],
       notificationCategory: ["attendance", "activity", "system"],
       postType: ["ensemble", "gathering"],
