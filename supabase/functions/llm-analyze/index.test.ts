@@ -269,11 +269,117 @@ Deno.test("两样都没有（都是空形态）：400（判据是「ocr_text 是
   }
   eq(calls, 0, "不该触达上游");
 
-  // ⚠️ **只有空白**的 `ocr_text` 仍然放行 —— 这不是本次的判据（本次只把「必须非空」
-  // 松成「两样至少给一样」），而拆字段之前它也是放行的（旧判据 `!inputText` 对 "   "
-  // 为假）。顺手加严会是一次**无关的行为变更**，那正是本仓反复栽过的那类坑。
+  // ⚠️ **只有空白**的 `ocr_text` 现在也 400 —— 这是 pkuso-backend#41 改的（2026-09-26）。
+  // 改之前它放行，且当时的注释把「放行」写成**必须保住的既有行为**（「顺手加严是无关的
+  // 行为变更」）。那句话在**别的 PR** 里是对的，而 #41 本身就是来改这一条的：放行之后
+  // prompt 走「有识别文本」那一支，等于把「请只根据文件名判断」那句指令丢掉 ——
+  // 而前端「一页有内容的都没读到」那条降级路正靠它活着。
+  // 反面（空白 + 文件名 → 仍放行，且走对分支）在下一条用例里。
   reset(() => new Response(OK_BODY, { status: 200 }));
-  eq((await post({ ocr_text: "   " })).status, 200, "只有空白仍然放行（既有行为，未变）");
+  for (const blank of ["   ", "\n\n", "\t"]) {
+    eq((await post({ ocr_text: blank })).status, 400, `只有空白 ${JSON.stringify(blank)} 应 400`);
+  }
+  eq(calls, 0, "不该触达上游");
+});
+
+Deno.test("看不见的字符组成的 file_name = 没给文件名（#40）", async () => {
+  // `.trim()` 按规范只剥 WhiteSpace + LineTerminator：`\p{Cf}` 与
+  // `\p{Default_Ignorable_Code_Point}` 都在它之外（后者的类别是 `Lo`/`Mn`，`\p{Cf}`
+  // 也够不着）。于是这些「名字」肉眼全空、`.trim()` 之后却**非空**，会一路进 prompt ——
+  // `文件名（…）：` 后面什么都没有，等于花一次调用让模型对着看不见的字符编答案。
+  const INVISIBLE_NAMES: Array<[string, string]> = [
+    ["\u200b", "零宽空格（Cf）"],
+    ["\u3164", "韩文填充符（Default_Ignorable，类别 Lo —— Cf 够不着）"],
+    ["\u2800", "盲文空格（不在任何属性集里，只能点名）"],
+    ["\ufffc", "对象替换符（同上）"],
+    ["\u180e", "蒙古文元音分隔符"],
+  ];
+  reset(() => new Response(OK_BODY, { status: 200 }));
+  // ① 只有这种名字 = 等于什么都没给 → 400（与 `{ ocr_text: "" }` 走同一条判据）
+  for (const [name, why] of INVISIBLE_NAMES) {
+    eq((await post({ ocr_text: "", file_name: name })).status, 400, `只有不可见名字应 400：${why}`);
+  }
+  eq(calls, 0, "不该触达上游");
+
+  // ② 有 OCR 文本时放行，但**名字不许进 prompt** —— 它等同于没给
+  reset(() => new Response(OK_BODY, { status: 200 }));
+  const ok = await post({ ocr_text: SRC, file_name: "\u200b" });
+  eq(ok.status, 200, "有文本时应放行");
+  eq(lastPrompt.includes("文件名（"), false, "不可见的名字不该出现在 prompt 里");
+});
+
+Deno.test("全空白 ocr_text + 文件名：走「只根据文件名」那一支（#41）", async () => {
+  // 改之前两处都按真值判：入口放行、prompt 走「有识别文本」那一支 ⇒ 报文里是一段空的
+  // `识别文本："""   """`，而「没有可用的识别文本 / 请只根据上面的文件名」**不出现**
+  // （既有用例只断言了状态码，没钉分支 —— 这正是 #41 记下的缺口）。
+  reset(() => new Response(OK_BODY, { status: 200 }));
+  const res = await post({ ocr_text: "   ", file_name: "x.pdf" });
+  eq(res.status, 200, "给了文件名时全空白仍放行（前端那条降级路的形态）");
+  eq(calls, 1, "应当触达上游一次");
+  eq(lastPrompt.includes("没有可用的识别文本"), true, "要明说没有识别文本");
+  eq(lastPrompt.includes("只根据上面的文件名"), true, "要指路到文件名");
+  eq(lastPrompt.includes("识别文本："), false, "不该出现空的识别文本块");
+
+  // 反向：真给了文本时那一支必须回来 —— 否则「永远走文件名支」也会让上面三条全绿。
+  reset(() => new Response(OK_BODY, { status: 200 }));
+  await post({ ocr_text: "Allegretto", file_name: "x.pdf" });
+  eq(lastPrompt.includes("识别文本："), true, "有文本时要用识别文本那一支");
+  eq(lastPrompt.includes("没有可用的识别文本"), false, "有文本时不该说没有");
+});
+
+Deno.test("两个入参的长度上界（#42）", async () => {
+  // ⚠️ 这里的两组数字是**手写的**（不 import 常量）：本议题要防的就是「上界被改大」，
+  // 引用常量的话，把 200 改成 1e9 这套用例照样全绿 —— 那是自比，不是测试。
+  reset(() => new Response(OK_BODY, { status: 200 }));
+  eq((await post({ ocr_text: SRC, file_name: "a".repeat(200) })).status, 200, "200 字符的文件名放行");
+  eq((await post({ ocr_text: SRC, file_name: "a".repeat(201) })).status, 400, "201 字符的文件名 400");
+  eq((await post({ ocr_text: "a".repeat(20000) })).status, 200, "20000 字符的文本放行");
+  eq((await post({ ocr_text: "a".repeat(20001) })).status, 400, "20001 字符的文本 400");
+  eq(calls, 2, "只有那两次放行的触达上游");
+
+  // ⚠️ 数的是**码点**（同 `MAX_INSTRUMENT_CHARS` 的理由）：10001 个星光平面字符
+  // = 20002 个码元 —— 按码点算在上界内，按码元算会被误拦。判据不该与输入形态相关。
+  reset(() => new Response(OK_BODY, { status: 200 }));
+  const astral = "\u{20000}".repeat(10001);
+  eq([...astral].length, 10001, "前提：这串是 10001 个码点");
+  eq(astral.length, 20002, "前提：码元数是 20002");
+  eq((await post({ ocr_text: astral })).status, 200, "按码点计，10001 没超界");
+
+  // ⚠️ 界判的是**真正会用到的那个值**（归一之后），不是 raw：
+  // 100 万个空格「很长但等于没给」，它归一成空串、走「没给」那条路 —— 给了文件名时
+  // 应当放行（走文件名支），而不是为一件根本没发出去的东西报 400。
+  reset(() => new Response(OK_BODY, { status: 200 }));
+  const res = await post({ ocr_text: " ".repeat(1_000_000), file_name: "x.pdf" });
+  eq(res.status, 200, "超长但全空白的文本 + 文件名：放行");
+  eq(lastPrompt.length < 10000, true, "发给模型的 prompt 不该带上那 100 万个空格");
+
+  // ⚠️ **文件名那一侧的同一条口径**（对抗测试实测：这条此前只钉住了 ocr_text 一侧，
+  // 把 `exceedsCodePoints(fileName, …)` 改成判归一前的 `trimmedName` 全绿）。
+  // 10 万个零宽空格 = 归一成空串 = 没给名字，不该按 raw 的长度报 400。
+  reset(() => new Response(OK_BODY, { status: 200 }));
+  const blankName = await post({ ocr_text: SRC, file_name: "\u200b".repeat(100_000) });
+  eq(blankName.status, 200, "全空形态的超长文件名：归一到空串后不判长度");
+
+  // 两条界同时违反时，报文是**确定**的（顺序有意：文件名先解析、先被用到）。
+  // 没有这条断言时，把文件名那一段挪到函数末尾是全绿的（只有报文变）。
+  reset(() => new Response(OK_BODY, { status: 200 }));
+  const both = await post({ file_name: "a".repeat(201), ocr_text: "x".repeat(30001) });
+  const bothBody = await both.json();
+  eq(both.status, 400, "两条都违反：400");
+  eq(/file_name/.test(bothBody.error), true, "报文要说的是文件名那条（顺序有意）");
+  eq(calls, 0, "不该触达上游");
+
+  // ⚠️ 这条是**输入形状**的哨兵，**不是内存或 CPU 形态的哨兵** —— 它断言的行为
+  // （400 / 不触达上游）大部分已被上一条 `20001 → 400` 蕴含；加了一条「报文必须是
+  // 界判那条」的断言，才算不完全重复。留着它是因为它把「可见/不可见**交替**」这个
+  // 具体的输入形状钉进了套件，而那个形状正是判空实现（按拼接段数分配）出问题的
+  // 触发条件 —— 内存/耗时曲线只能看 `analyze.ts` 里 `VISIBLE` 那段 docblock 的实测。
+  reset(() => new Response(OK_BODY, { status: 200 }));
+  const alternating = await post({ ocr_text: ("a" + "\u00ad").repeat(200_000) });
+  eq(alternating.status, 400, "交替形态的超长文本：400");
+  const altBody = await alternating.json();
+  eq(/at most 20000/.test(altBody.error), true, "报文要是界判那条（说明它确实走到了长度界）");
+  eq(calls, 0, "不该触达上游");
 });
 
 Deno.test("只发 file_name、连 `ocr_text` 键都不发：400（与「空串 + 文件名」不是一回事）", async () => {
