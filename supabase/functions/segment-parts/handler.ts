@@ -99,6 +99,26 @@ function validateBody(
  * 一旦发过去，模型会锚定在「应该有 4 段」上，而真实情况可能是短笛 1、2 挤在同一页
  * （那是 `subParts` 的事，不是边界）。分段只以各页文本为准。
  */
+/**
+ * 把文本里**能关掉围栏**的引号串拆开（连续 3 个及以上 → 每两个之间插一个空格）。
+ *
+ * ⚠️ 为什么必须做（pkuso-backend#46）：逐页的识别文本是**任意页面文字**，整段插在下面那对
+ * `"""` 围栏里。内容里只要出现一段 `"""`，围栏就**提前关闭** —— 后面的文字于是落到
+ * **prompt 级**（不再是「被引号包住的页面文本」），而且位置紧邻 `结果：`。
+ * 这里要区分两件事：①「prompt 里存在攻击者可控的文字」是**固有**的（页面文字本来就
+ * 什么都有，靠字符过滤解决不了）；②「内容能把**围栏**关掉、把数据升级成指令」是**能修**
+ * 的 —— 就是这里这一步。
+ *
+ * ⚠️ 只插空格、**不改字符本身**：算 `evidenceFound` 的 `normalizeForMatch` 会把所有
+ * 非字母数字都剥掉，两边都剥 ⇒ 引文匹配不受影响。
+ *
+ * ⚠️ 与 `../llm-analyze/handler.ts` 里那份**必须一致**：同一个形状、同一个理由，而两个
+ * Edge Function 各自独立部署、没有共享模块可放 —— 改一处就要改两处。
+ */
+function defuseFence(text: string): string {
+  return text.replace(/"+/g, (run) => (run.length >= 3 ? run.split("").join(" ") : run));
+}
+
 function buildPrompt(pages: PageText[], pageCount: number): string {
   const withText = new Set(pages.map((p) => p.page));
   const missing: number[] = [];
@@ -158,7 +178,7 @@ ${missing.length ? `⚠️ 第 ${missing.join("、")} 页没取到文本（OCR �
 
 识别文本：
 """
-${body}
+${defuseFence(body)}
 """
 
 结果：`;
