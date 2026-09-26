@@ -2,6 +2,7 @@ import {
   type Analysis,
   abstain,
   buildAnalysis,
+  isEffectivelyBlank,
   MAX_EXTRA_SECTIONS,
   MAX_SUB_PARTS,
   SECTIONS,
@@ -22,9 +23,13 @@ import {
 const SECTION_LIST = SECTIONS.join("、");
 
 /**
- * 单次上游请求的上限。前端 `LLM_TIMEOUT_MS` 是 30s，而这里最坏要跑
- * 4 次请求 + 7s 退避 —— 不设单次上限的话，一条挂住的连接就能把整个预算吃光
- * 而前端早已超时（用户看到超时、后端还在烧额度）。
+ * 单次上游请求的上限。
+ *
+ * 这里最坏要跑 4 次请求 + 7s 退避 —— 单次没有上限的话，一条挂住的连接就能把整个预算
+ * 吃光：前端那边总超时一到就报错（用户已经拿到错误），后端还在烧额度。
+ *
+ * ⚠️ 这里**刻意不写前端那份超时的具体值**：它是跨仓的常量，此前写过一次（30s）而前端
+ * 后来改成了别的值，注释就烂在那儿了。要核就回 pkuso-web 的 `analysis.ts` 看。
  */
 const UPSTREAM_TIMEOUT_MS = 8000;
 
@@ -44,6 +49,56 @@ export const retry = {
   baseDelayMs: 1000,
   sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
 };
+
+/**
+ * 两个入参字段的长度上界（pkuso-backend#42）。
+ *
+ * 这是这个函数**唯一不设防的输入维度**：类型（`typeof`）、形状（键在不在）、字符
+ * （`file_name` 的**空/非空**现在由 `isEffectivelyBlank` 判）都防了，长度没有 —— 议题里的
+ * 实测是 `{"ocr_text": "a".repeat(1e6), "file_name": "b".repeat(1e6)}` → **200 且触达上游
+ * 一次**，prompt 长达 200 万字符，而 `max_tokens` 只有 200。后果不是「慢一点」：8s 的单次
+ * 超时下，4 次请求（3 次重试）全耗在超时上、还要加退避 —— 用户迟迟只等到一个错误，
+ * 而额度已经烧掉。
+ *
+ * ⚠️ 数字是**拍的**（议题把这一步明确留给人拍）。依据：
+ * - **文件名 200**：它会**落到用户的文件系统上**（下载名由它生成），真实名字是
+ *   `PMLASIA01165-13-Horn_2.pdf` 这种量级；Linux 的 255 **字节**上限还意味着一个中文名
+ *   要更短。200 已经极宽松。
+ * - **`ocr_text` 20000**：前端的调用点发的都是**单页**文本（整份识别、整份那条兜底、
+ *   段级识别用的也是那一段的首页），不是整份文档的拼接 —— 一页 OCR 文本离两万码点
+ *   很远，这个数只是把「手搓的巨串」挡在外面，同时远小于任何上下文上限。
+ *
+ * ⚠️ **判的是「真正会用到的那个值」**：文件名与文本都先过 `isEffectivelyBlank` 归一
+ * （空形态 → 空串），再判长度 —— 于是 `" ".repeat(1e6)` 这种「长，但等于没给」的请求
+ * 不会被这两条界拦下：它归一到空串之后走的是「没给」那条路，该 400 还是 200 由下面
+ * 「至少给一样」定。反过来把界架在 raw 上，就会为一件根本没发出去的东西报 400。
+ *
+ * ⚠️ 数的是**码点**（`String.length` 数的是码元），理由与 `MAX_INSTRUMENT_CHARS` 同源：
+ * 星光平面字符占 2 个码元，用 `.length` 会让同一个上界对两类字符给出不同结果。
+ *
+ * 放在 handler 而不是 analyze.ts：这两条是**请求边界**的规矩（HTTP 入参），不是分析
+ * 语义 —— `MAX_INSTRUMENT_CHARS` 在那边，是因为它判的是**模型给的值**。
+ */
+const MAX_FILE_NAME_CHARS = 200;
+const MAX_OCR_TEXT_CHARS = 20000;
+
+/**
+ * 码点数**超过** `max` 吗？数到就停。
+ *
+ * ⚠️ 别写成 `[...s].length > max`：那会先为整个串造一个码点数组 —— 而 #42 防的正是
+ * 「手搓一个上百 MB 的 `ocr_text`」，判据自己不能被它打爆（Deno isolate 的内存是有上限的，
+ * `.length` 那种写法在拒绝之前就已经把内存吃掉了）。走迭代器则最多多走一个码点。
+ *
+ * 语义与 `[...s].length` 一致（按码点、代理对算一个），`MAX_INSTRUMENT_CHARS` 的理由同样适用。
+ */
+function exceedsCodePoints(s: string, max: number): boolean {
+  const it = s[Symbol.iterator]();
+  let n = 0;
+  while (!it.next().done) {
+    if (++n > max) return true;
+  }
+  return false;
+}
 
 /** fetch 抛出来的错误 —— 只取类型与消息，这类是网络层信息，给前端看没有风险。 */
 function describeUpstreamError(err: unknown): string {
@@ -69,8 +124,12 @@ const corsHeaders = {
  * 响应字段**平铺在顶层**，且小提琴的 subParts 优先采信模型、只在模型给不出时
  * 才由声部推导（是**兜底**，不是覆盖）—— 理由见 analyze.ts 的 VIOLIN_SUB_PART
  * 与下面响应处的注释。
+ *
+ * ⚠️ 两个入参都**已经被 `handler` 归一过**：`text` 空串 = 没给文本，`fileName` 空串 =
+ * 没有文件名。所以下面的分支**不再自己判**「算不算空」—— 同一个真值判据写在两处会一起
+ * 错，那正是 #41 的形状（入口按真值判、这里也按真值判，两处都放行了 `"   "`）。
  */
-function buildPrompt(inputText: string, fileName = ""): string {
+function buildPrompt(text: string, fileName = ""): string {
   return `你是乐团谱务助手。下面是一份分谱首页的识别文本。
 请判断这份谱子属于哪个声部、是什么乐器。
 ${
@@ -167,8 +226,12 @@ ${
   // 没有 OCR 文本是**真实存在**的一路（前端「一页有内容的都没读到」时只用文件名判断）。
   // 那时留一个空的识别文本块，模型会不知道该怎么办 —— 明说一句既省得它乱猜，
   // 也告诉它证据该抄哪里（抄文件名，后端会据此报 `evidenceFromFileName`）。
-  inputText
-    ? `识别文本：\n"""\n${inputText}\n"""`
+  //
+  // ⚠️ 这里的 `text` 已经是「有效非空」的那一份（`handler` 归一的），所以**全空白**的
+  // `ocr_text` 走的是下支 —— 在此之前它走的是上支，于是那段指令（「只根据文件名判断」）
+  // 静默消失，而前端那条降级路正靠它活着（#41）。
+  text
+    ? `识别文本：\n"""\n${text}\n"""`
     : `⚠️ **这一页没有可用的识别文本**（OCR 读不出或整页空白）—— 请**只根据上面的文件名**判断，\n   并在 evidence 里抄你据以判断的那一段**文件名**。`
 }
 
@@ -229,7 +292,23 @@ export async function handler(req: Request): Promise<Response> {
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
-    const fileName = typeof rawName === "string" ? rawName.trim() : "";
+    // 「给了、但等于没给」的文件名归一成空串（pkuso-backend#40）：只由零宽字符/不可见
+    // 字符组成的名字，`.trim()` 之后**仍非空**（规范就不剥 `\p{Cf}`），进 prompt 就是一行
+    // 肉眼全空的「文件名（…）：」—— 等于花一次调用让模型对着看不见的字符编答案。
+    // ⚠️ 归一在**判长度之前**：界只判真正会用到的那个值（见 `MAX_FILE_NAME_CHARS` 的注释）。
+    const trimmedName = typeof rawName === "string" ? rawName.trim() : "";
+    const fileName = isEffectivelyBlank(trimmedName) ? "" : trimmedName;
+    // ⚠️ 两条界的**先后是有意的**：先判文件名（它先被解析、也先被用到），所以同时违反
+    // 两条时回的是文件名那条报文 —— 有用例钉住这个顺序，改顺序会让它红。
+    if (exceedsCodePoints(fileName, MAX_FILE_NAME_CHARS)) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: `file_name must be at most ${MAX_FILE_NAME_CHARS} characters`,
+        }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
 
     // 请求体是用户可控的 JSON，值不一定是字符串。类型不对在这里就回 400 ——
     // 否则它会一路走到语义判断，拿一个非字符串去规范化（abstainReason 会说谎，
@@ -245,7 +324,23 @@ export async function handler(req: Request): Promise<Response> {
     // 的请求会被拦下。今天没有这样的调用方（pkuso-web 无条件发 `ocr_text`，最差是空串），
     // 但报文里那句「unless a non-empty file_name is provided」说的是**空串**那一种，
     // 别读成「可以不发这个字段」。
-    if (typeof inputText !== 'string' || (!inputText && !fileName)) {
+    //
+    // ⚠️ **「空」的判据只有一份**（pkuso-backend#41）：这里与 `buildPrompt` 的分支都用
+    // `isEffectivelyBlank` 归一后的值。此前两处各按 `inputText` 的真值判 —— 全空白的
+    // `"   "` 于是**两处一起放行**：入口不拦，prompt 还走「有识别文本」那一支，
+    // 把「请只根据文件名判断」那句指令丢掉（前端那条降级路正靠它活着）。
+    const promptText = typeof inputText === "string" && !isEffectivelyBlank(inputText) ? inputText : "";
+    if (exceedsCodePoints(promptText, MAX_OCR_TEXT_CHARS)) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: `ocr_text must be at most ${MAX_OCR_TEXT_CHARS} characters`,
+        }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    if (typeof inputText !== 'string' || (promptText === "" && fileName === "")) {
       return new Response(
         JSON.stringify({
           success: false,
@@ -264,7 +359,7 @@ export async function handler(req: Request): Promise<Response> {
       );
     }
 
-    const prompt = buildPrompt(inputText, fileName);
+    const prompt = buildPrompt(promptText, fileName);
 
     // 带重试的 DeepSeek 调用
     const maxRetries = 3;
@@ -301,8 +396,8 @@ export async function handler(req: Request): Promise<Response> {
               max_tokens: 200,
               response_format: { type: 'json_object' },
             }),
-            // 单次上限。不设的话一条挂住的连接会吃光整个预算，
-            // 而前端 LLM_TIMEOUT_MS 只有 30s。
+            // 单次上限。不设的话一条挂住的连接会吃光整个预算 ——
+            // 前端的总超时一到就报错，后端还在烧额度。
             signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
           }
         );
@@ -347,7 +442,9 @@ export async function handler(req: Request): Promise<Response> {
         try {
           // ⚠️ 第三个参数是**文件名**：`evidenceFound` 只拿页面文本判，
           // 引文只在文件名里找得到时走 `evidenceFromFileName`（见 `buildAnalysis`）。
-          analysis = buildAnalysis(JSON.parse(responseText), inputText, fileName);
+          // ⚠️ 证据核对传的是**归一后**那一份（模型实际看到的原文）：全空白的 `ocr_text`
+          // 归一成空串，所以「在原文里找到」这条判据面对的是真正发给模型的东西。
+          analysis = buildAnalysis(JSON.parse(responseText), promptText, fileName);
         } catch {
           analysis = abstain('bad-json');
         }

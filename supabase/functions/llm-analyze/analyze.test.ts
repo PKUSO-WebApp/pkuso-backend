@@ -2,6 +2,7 @@ import {
   abstain,
   buildAnalysis,
   evidenceSupports,
+  isEffectivelyBlank,
   MAX_EXTRA_SECTIONS,
   MAX_SUB_PARTS,
   normalizeForMatch,
@@ -13,7 +14,7 @@ import {
 
 /**
  * 跑法：deno test --allow-env=DEEPSEEK_API_KEY supabase/functions/llm-analyze/
- * （--allow-env 是给同目录的 index.test.ts 用的；本文件本身不需要任何权限。）
+ * （--allow-env 是给同目录的 index.test.ts 用的；--allow-read 是给下面那条静态守卫读 analyze.ts 源码用的。）
  *
  * 每个用例对应一条**踩过的坑**，不是凑覆盖率 —— 注释里写清它防的是什么。
  */
@@ -999,3 +1000,107 @@ Deno.test("show：用例标题里的转义（只服务失败信息，不涉生�
   }
 });
 
+Deno.test("isEffectivelyBlank：不可见字符整族都算空，而「危险但不隐形」的不算（#40）", () => {
+  // 表的构造方式与上面两张表不同：这里用**码点**拼串（`String.fromCodePoint`），
+  // 而不是把不可见字符写进源码 —— 同一个理由（读的人和 diff 都要分得清是哪一条），
+  // 顺带连「转义漏写」这个坑也一起绕开。
+  const BLANK: Array<[number[], string]> = [
+    [[0x20], "普通空格"],
+    [[0x09, 0x0a], "制表 + 换行"],
+    [[0x200b], "零宽空格（Cf）"],
+    [[0x3164], "韩文填充符（Default_Ignorable，类别 Lo —— Cf 够不着）"],
+    [[0xfe0f], "变体选择符（同上一族）"],
+    [[0x2800], "盲文空格（不在任何属性集里，只能点名）"],
+    [[0xfffc], "对象替换符（同上）"],
+    [[0x180e], "蒙古文元音分隔符"],
+    [[0x2028], "行分隔符（Zl）：只有 `\\s` 接得住它，不在上面任何一族里"],
+    [[0x2029], "段分隔符（Zp）：同上"],
+    [[0xfff9], "行间注释锚（Cf 里不在 DICP 的那些之一）"],
+    [[0x00a0], "NBSP：`\\s` 认得它（走的是空白那一条，与上面几族无关）"],
+    [[0x3000], "全角空格（同上）"],
+    [[0x200b, 0xfeff, 0x20], "零宽空格 + BOM + 空格混在一起"],
+    [[0xd800], "孤立代理（Cs）：编不成 UTF-8，肉眼也不存在"],
+  ];
+  for (const [cps, why] of BLANK) {
+    eq(isEffectivelyBlank(String.fromCodePoint(...cps)), true, `应算空：${why}`);
+  }
+
+  // ⚠️ **反面同等重要**：判空不是判危险。`UNSAFE_IN_NAME` 收的 `\.\.`、`[\\*?"<>|:]`、
+  // 非空格 `Zs` 让一个名字**危险**，但它们**不是空** —— 若把它当成「命中即算空」的判据
+  // （而不是一个剥除集），`..` 与 `圆号:1` 都会被判成「没给名字」：入口照旧放行，
+  // prompt 里却不再出现文件名（一条静默降级，而且正是「一个名字明明给了」的那种）。
+  const NOT_BLANK = ["圆号", "..", "Horn_1,_2.pdf", "圆号.", "a/b", "圆号:1", "1"];
+  for (const s of NOT_BLANK) eq(isEffectivelyBlank(s), false, `不该算空：${show(s)}`);
+
+  // 夹在中间的不可见字符**不**让名字变空（只有「整串都不可见」才算空）——
+  // 否则 `圆号<ZWSP>1` 会被当成没给名字。
+  eq(isEffectivelyBlank("圆号" + String.fromCodePoint(0x200b) + "1"), false, "中间夹零宽空格不算空");
+});
+
+Deno.test("isEffectivelyBlank 的形态、来源、绑定都没被改（白名单 / import / 定义 / 唯一导出 / 不许猴补）", async () => {
+  // ⚠️ 这是**形态**守卫，下面逐条列出它管什么，**范围是写明的、不是全称**：
+  //   ① 白名单：`analyze.ts` 里那三行必须原样存在（拦**就地换写法**）；
+  //   ② import：`handler.ts` 必须从 `./analyze.ts` 引入它（拦**换模块**）；
+  //   ③ 定义：`VISIBLE` 必须是正则字面量（拦把它换成带 `test` 方法的对象 —— 那样
+  //      三行原样、行为却换了）；
+  //   ④ 唯一导出：**同目录只有 `analyze.ts` 导出这个名字**（拦「留着原 import 不用、
+  //      另从别处引一个同名的」）；
+  //   ⑤ 不许猴补：不许给 `VISIBLE.test` **赋值**（`const` 只约束绑定，改属性是合法的 ——
+  //      那样三行一字不动、行为被整个换掉）。
+  // ⚠️ **不在范围内**：刻意混淆 —— 把那三行照抄进**模板串**（块注释那份已被 ① 的剥注释堵上）。
+  // 它拦的是**正常写法与正常重构**里的退步，不是「有人处心积虑要绕」。
+  //
+  // 为什么值得这么紧：这条判据的**实现形态本身是承重结构** —— 换个形态就是几倍内存或
+  // 十几倍 CPU（`analyze.ts` 里 `VISIBLE` 那段 docblock 有三组实测）。
+  // 这些断言都是对抗测试逐轮击破后补的：禁词表 → 白名单 → 本轮又补 ②③④（破法依次是
+  // 「四种非混淆写法」「改 import 来源」「猴补 test」「定义换成对象」）。
+  //
+  // ⚠️ 先剥注释再判：`analyze.ts` 的 docblock 本来就在讨论 `VISIBLE` 与 `test()`，
+  // 不剥的话，将来谁在**注释里**写一句反例（「别写 `VISIBLE.test = …`」）就会假红。
+  // ⚠️ 归一 `\r\n`：本仓工作区在 Windows 上是 CRLF，不归一这几条断言会**永久红**。
+  const norm = (t: string) => t.replace(/\r\n/g, "\n");
+  const stripComments = (t: string) =>
+    t.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+
+  const src = norm(await Deno.readTextFile(new URL("./analyze.ts", import.meta.url)));
+  const code = stripComments(src);
+  const allowed = [
+    "export function isEffectivelyBlank(s: string): boolean {",
+    "  return !VISIBLE.test(s);",
+    "}",
+  ].join("\n");
+  eq(code.includes(allowed), true, "① 判空的实现形态变了 —— 先读 VISIBLE 那段 docblock 的三组实测");
+
+  const hSrc = norm(await Deno.readTextFile(new URL("./handler.ts", import.meta.url)));
+  eq(
+    /import \{[^}]*\bisEffectivelyBlank\b[^}]*\} from ['"]\.\/analyze\.ts['"];/.test(hSrc),
+    true,
+    "② 判空只能从 ./analyze.ts 引入 —— 挪到别的模块等于让①守着一份死代码",
+  );
+
+  eq(
+    /^const VISIBLE = \/[^\n]*\/[a-z]*;$/m.test(code),
+    true,
+    "③ VISIBLE 必须是正则字面量 —— 换成带 test 方法的对象就能三行原样而行为全换",
+  );
+
+  // ⑤ 猴补：`VISIBLE` 是 const，但只约束绑定 —— `VISIBLE.test = …` 合法。
+  // （别改成「数 VISIBLE 出现次数」：本文件的注释里多次提到它，计数会被注释破坏。）
+  eq(
+    /VISIBLE\s*\.\s*test\s*=/.test(code),
+    false,
+    "⑤ 不许给 VISIBLE.test 赋值 —— 判据的形态要靠改代码、不是靠打补丁",
+  );
+
+  // ④ 同目录扫一遍：除 analyze.ts 外，没有别的非测试文件导出这个名字。
+  // （② 只验「那行 import 在」，留着它不用、另从别处引一个同名的仍能过 —— 这条堵那个。）
+  const dir = new URL("./", import.meta.url);
+  const others: string[] = [];
+  for await (const e of Deno.readDir(dir)) {
+    if (!e.isFile || !e.name.endsWith(".ts") || e.name.includes(".test.")) continue;
+    if (e.name === "analyze.ts") continue;
+    const t = stripComments(norm(await Deno.readTextFile(new URL(e.name, dir))));
+    if (/export\b[^\n]*\bisEffectivelyBlank\b/.test(t)) others.push(e.name);
+  }
+  eq(others, [], "④ 判空只该由 analyze.ts 导出 —— 现在这些文件也在导出它");
+});
