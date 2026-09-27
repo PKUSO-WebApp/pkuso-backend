@@ -55,6 +55,9 @@ jobs:
           FAILED=""
           for fn in supabase/functions/*/; do
             name=$(basename "$fn")
+            # `_` 开头的是共享代码目录（如 _shared/），不是函数——它没有 index.ts，
+            # 当成函数部署必然失败。共享代码由 import 它的函数各自打包进去。
+            case "$name" in _*) echo "跳过共享目录 $name"; continue;; esac
             echo "::group::Deploying $name"
             if ! supabase functions deploy "$name" --no-verify-jwt 2>&1; then
               echo "::error::Failed to deploy $name"

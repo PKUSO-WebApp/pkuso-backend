@@ -116,6 +116,10 @@ jobs:
           cd supabase
           for fn in functions/*/; do
             name=$(basename "$fn")
+            # `_` 开头的是共享代码目录（如 _shared/），不是函数：它没有 index.ts，
+            # 部署必然失败——而本循环不像 sync-dev 那样收集失败继续跑，一个失败就会
+            # 让整个 prod 部署中断。共享代码由 import 它的函数各自打包进去。
+            case "$name" in _*) echo "跳过共享目录 $name"; continue;; esac
             echo "Deploying $name..."
             supabase functions deploy "$name" --no-verify-jwt
           done

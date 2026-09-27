@@ -14,6 +14,7 @@
 // - 密钥（WECHAT_APP_ID/WECHAT_APP_SECRET）经 supabase secrets 注入，不入库。
 
 import { createClient } from 'npm:@supabase/supabase-js@2'
+import { CORS_ALLOW_HEADERS, createLogger } from '../_shared/diag.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -32,20 +33,18 @@ const json = (status: number, body: Record<string, unknown>): Response =>
 const UPSTREAM_TIMEOUT_MS = 8000
 
 Deno.serve(async (req) => {
-  const startedAt = Date.now()
   // 结构化日志：Supabase 把函数 stdout 收进 function_logs。排查「少数人登录失败」
   // 要靠它区分「请求没到达服务端」（只有客户端侧有痕迹）与「到达后在某一跳失败」——
   // 后者记录失败分支、累计耗时与微信原始 errcode。ms 为相对本次请求起点的累计耗时，
   // 因此逐条读出即得各步耗时，无需额外的分步计时。
-  const log = (event: string, detail: Record<string, unknown> = {}): void => {
-    console.log(JSON.stringify({ fn: 'wechat-auth', event, ms: Date.now() - startedAt, ...detail }))
-  }
+  // diag 来自客户端请求头，是与客户端那条失败记录对账的唯一凭据（见 _shared/diag.ts）。
+  const { log } = createLogger('wechat-auth', req)
   if (req.method === 'OPTIONS') {
     return new Response(null, {
       status: 204,
       headers: {
         'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+        'Access-Control-Allow-Headers': CORS_ALLOW_HEADERS,
       },
     })
   }
