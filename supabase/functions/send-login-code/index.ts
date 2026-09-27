@@ -11,6 +11,7 @@
 // - 邮箱格式校验
 
 import { createClient } from 'npm:@supabase/supabase-js@2'
+import { CORS_ALLOW_HEADERS, createLogger } from '../_shared/diag.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -135,23 +136,36 @@ function buildLoginCodeEmailHtml(code: string): string {
 }
 
 Deno.serve(async (req) => {
+  // 结构化日志（见 _shared/diag.ts）：diag 与客户端那条失败记录对账，ms 为累计耗时。
+  // ⚠️「静默」是对**响应**的要求（防枚举：成功/失败回同一结构），不是对日志的要求——
+  // 下面几条静默分支恰恰只能靠日志分辨，否则「没收到验证码」永远查不出是冷却、是没这
+  // 个用户、还是 SMTP 挂了。
+  const { log } = createLogger('send-login-code', req)
   if (req.method === 'OPTIONS') {
     return new Response(null, {
       status: 204,
       headers: {
         'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+        'Access-Control-Allow-Headers': CORS_ALLOW_HEADERS,
       },
     })
   }
-  if (req.method !== 'POST') return ok({ error: 'method not allowed' })
+  if (req.method !== 'POST') {
+    log('fail', { step: 'method', status: 405, error: 'method not allowed' })
+    return ok({ error: 'method not allowed' })
+  }
   if (!SUPABASE_URL || !SERVICE_ROLE_KEY || !SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
+    log('fail', { step: 'config', status: 500, error: 'server misconfigured' })
     return ok({ error: 'server misconfigured' })
   }
 
   // IP cooldown
   const clientIp = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
   if (!checkIpCooldown(clientIp)) {
+    // 60s 内重复点「获取验证码」会走到这：**响应是 success，邮件却不发**，
+    // 客户端于是提示「已发送」而用户永远收不到——这类「假成功」只能靠这行日志认出。
+    // 不记 IP：diag 已经能把这次请求和客户端对上，IP 只会往日志里塞个人信息。
+    log('fail', { step: 'cooldown', status: 200, error: 'ip cooldown' })
     return ok({ success: true }) // 静默拒绝，防枚举
   }
 
@@ -159,6 +173,7 @@ Deno.serve(async (req) => {
   const email = body?.email?.trim().toLowerCase()
 
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    log('fail', { step: 'parse_body', status: 400, error: 'invalid email format' })
     return ok({ error: 'invalid email format' })
   }
 
@@ -172,13 +187,14 @@ Deno.serve(async (req) => {
     .maybeSingle()
 
   if (profileError) {
-    console.error('[send-login-code] profile lookup error', profileError)
+    log('fail', { step: 'profile_lookup', status: 500, error: 'profile lookup failed', detail: profileError.message })
     return ok({ success: true }) // 静默，不暴露查询错误
   }
 
   // 用户不存在时返回 user_not_found（前端引导注册）
   // 注意：这会暴露用户是否存在，但登录场景下可接受（用户已输入邮箱）
   if (!profile) {
+    log('ok', { step: 'lookup', result: 'user_not_found' })
     return ok({ error: 'user_not_found' })
   }
 
@@ -205,7 +221,7 @@ Deno.serve(async (req) => {
   })
 
   if (insertError) {
-    console.error('[send-login-code] insert error', insertError)
+    log('fail', { step: 'insert_code', status: 500, error: 'insert failed', detail: insertError.message })
     return ok({ success: true })
   }
 
@@ -216,9 +232,11 @@ Deno.serve(async (req) => {
   try {
     await sendEmail(email, subject, htmlBody)
   } catch (err) {
-    console.error('[send-login-code] smtp error', err)
+    const msg = err instanceof Error ? err.message : String(err)
+    log('fail', { step: 'smtp', status: 502, error: 'failed to send email', detail: msg })
     return ok({ error: 'failed to send email' })
   }
 
+  log('ok', { step: 'sent' })
   return ok({ success: true })
 })
