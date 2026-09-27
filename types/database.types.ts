@@ -102,6 +102,48 @@ export type Database = {
           },
         ]
       }
+      client_error_logs: {
+        Row: {
+          app_version: string | null
+          created_at: string
+          detail: Json | null
+          event: string
+          id: number
+          level: string
+          message: string | null
+          page: string | null
+          platform: string | null
+          source: string
+          user_id: string | null
+        }
+        Insert: {
+          app_version?: string | null
+          created_at?: string
+          detail?: Json | null
+          event: string
+          id?: never
+          level?: string
+          message?: string | null
+          page?: string | null
+          platform?: string | null
+          source: string
+          user_id?: string | null
+        }
+        Update: {
+          app_version?: string | null
+          created_at?: string
+          detail?: Json | null
+          event?: string
+          id?: never
+          level?: string
+          message?: string | null
+          page?: string | null
+          platform?: string | null
+          source?: string
+          user_id?: string | null
+        }
+        Relationships: []
+      }
       feedback: {
         Row: {
           content: string
@@ -1014,6 +1056,7 @@ export type Database = {
         Args: { p_email: string; p_exclude_user_id: string }
         Returns: boolean
       }
+      cleanup_client_error_logs: { Args: never; Returns: number }
       get_my_profile_entry: {
         Args: never
         Returns: {
