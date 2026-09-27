@@ -113,6 +113,7 @@ export type Database = {
           message: string | null
           page: string | null
           platform: string | null
+          received_at: string
           source: string
           user_id: string | null
         }
@@ -126,6 +127,7 @@ export type Database = {
           message?: string | null
           page?: string | null
           platform?: string | null
+          received_at?: string
           source: string
           user_id?: string | null
         }
@@ -139,6 +141,7 @@ export type Database = {
           message?: string | null
           page?: string | null
           platform?: string | null
+          received_at?: string
           source?: string
           user_id?: string | null
         }
