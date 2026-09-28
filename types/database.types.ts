@@ -1079,6 +1079,7 @@ export type Database = {
         }[]
       }
       is_admin: { Args: never; Returns: boolean }
+      log_client_errors: { Args: { rows: Json }; Returns: undefined }
       sign_in_attendance_location: {
         Args: {
           p_accuracy?: number
