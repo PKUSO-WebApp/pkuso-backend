@@ -70,7 +70,14 @@ for (let i = 0; i < lines.length; i++) {
   for (let j = i + 1; j < Math.min(i + 6, lines.length); j++) {
     const at = lines[j].match(/at file:\/\/\/(.+?):\d+:\d+/);
     if (at) {
-      file = at[1].split("\\").join("/").replace(/^.*?pkusoweb\/pkuso-backend\//, "");
+      // ⚠️ 归一化必须**与机器无关**：本机是 `C:/Users/…/pkusoweb/pkuso-backend/…`，
+      // CI 是 `/home/runner/work/pkuso-backend/pkuso-backend/…`。只剥本机前缀的话，
+      // 配额里的相对键在 CI 上永远匹配不上 —— 每一条都会被判成「新增」。
+      // 所以统一剥到 `supabase/functions/` 为止。
+      file = at[1]
+        .split("\\")
+        .join("/")
+        .replace(/^.*?\/supabase\/functions\//, "supabase/functions/");
       break;
     }
   }
