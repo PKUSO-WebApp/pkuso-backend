@@ -16,6 +16,8 @@
 // - access_token 服务端缓存（约 5 分钟安全余量）；微信返回 40001/40014/42001 时清缓存重试一次。
 // - 图片上限 1MB：先据 content-length 预判、再据实际字节校验，超限在下载/转发前即拦截。
 
+import { CORS_HEADERS, CORS_ORIGIN_ONLY, json } from '../_shared/http.ts'
+
 interface WechatCheckData {
   errcode?: number
   errmsg?: string
@@ -172,32 +174,20 @@ async function checkImage(
   return r
 }
 
-const json = (status: number, body: Record<string, unknown>): Response =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-  })
-
 export async function handler(req: Request): Promise<Response> {
   if (req.method === 'OPTIONS') {
-    return new Response(null, {
-      status: 204,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-      },
-    })
+    return new Response(null, { status: 204, headers: CORS_HEADERS })
   }
-  if (req.method !== 'POST') return json(405, { error: 'method not allowed' })
+  if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405, CORS_ORIGIN_ONLY)
   if (!Deno.env.get('WECHAT_APP_ID') || !Deno.env.get('WECHAT_APP_SECRET')) {
-    return json(500, { error: 'server misconfigured' })
+    return json({ error: 'server misconfigured' }, 500, CORS_ORIGIN_ONLY)
   }
 
   let body: Record<string, unknown>
   try {
     body = (await req.json()) as Record<string, unknown>
   } catch {
-    return json(400, { error: 'invalid json body' })
+    return json({ error: 'invalid json body' }, 400, CORS_ORIGIN_ONLY)
   }
 
   const openid = typeof body.openid === 'string' ? body.openid.trim() : ''
@@ -207,23 +197,23 @@ export async function handler(req: Request): Promise<Response> {
     let r: CheckResult
     if (body.kind === 'text') {
       if (typeof body.content !== 'string' || !body.content)
-        return json(400, { error: 'missing content' })
+        return json({ error: 'missing content' }, 400, CORS_ORIGIN_ONLY)
       r = await checkText(body.content, openid, scene)
     } else if (body.kind === 'image') {
       if (typeof body.imageUrl !== 'string' || !body.imageUrl)
-        return json(400, { error: 'missing imageUrl' })
+        return json({ error: 'missing imageUrl' }, 400, CORS_ORIGIN_ONLY)
       r = await checkImage(body.imageUrl, openid, scene)
     } else {
-      return json(400, { error: 'unknown kind (expected text|image)' })
+      return json({ error: 'unknown kind (expected text|image)' }, 400, CORS_ORIGIN_ONLY)
     }
-    return json(200, r)
+    return json(r, 200, CORS_ORIGIN_ONLY)
   } catch (e) {
     // 返回 200 + debug，避免网关把 502 的 body 吞掉，便于定位
-    return json(200, {
+    return json({
       ok: false,
       error: String(e instanceof Error ? e.message : e),
       debug: lastDebug,
-    })
+    }, 200, CORS_ORIGIN_ONLY)
   }
 }
 

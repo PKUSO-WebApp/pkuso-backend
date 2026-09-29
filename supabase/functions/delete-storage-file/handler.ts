@@ -31,7 +31,8 @@
  * 输出：`{ success, deleted, skipped, errors? }`
  */
 
-import { createClient } from "npm:@supabase/supabase-js@2";
+import { readServiceEnv, serviceClient } from "../_shared/client.ts";
+import { CORS_HEADERS, json } from "../_shared/http.ts";
 
 /**
  * bucket → 还会引用它的「表.列」。白名单与引用检查**共用这一份定义**：
@@ -66,30 +67,18 @@ export function isSafePath(path: unknown): path is string {
   return true;
 }
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-};
-
-const json = (body: unknown, status = 200): Response =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
-  });
-
 export async function handler(req: Request): Promise<Response> {
   if (req.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: corsHeaders });
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
   }
 
   if (req.method !== "POST") {
-    return json({ error: "method not allowed" }, 405);
+    return json({ error: "method not allowed" }, 405, CORS_HEADERS);
   }
 
-  const supabaseUrl = Deno.env.get("SUPABASE_URL");
-  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  if (!supabaseUrl || !serviceRoleKey) {
-    return json({ error: "server misconfigured" }, 500);
+  const env = readServiceEnv();
+  if (!env) {
+    return json({ error: "server misconfigured" }, 500, CORS_HEADERS);
   }
 
   let bucket: unknown;
@@ -97,7 +86,7 @@ export async function handler(req: Request): Promise<Response> {
   try {
     ({ bucket, paths } = await req.json());
   } catch {
-    return json({ error: "invalid json body" }, 400);
+    return json({ error: "invalid json body" }, 400, CORS_HEADERS);
   }
 
   // ---- 防线 1：bucket 白名单 ----
@@ -110,17 +99,18 @@ export async function handler(req: Request): Promise<Response> {
         managed: Object.keys(BUCKET_REFERENCING_COLUMNS),
       },
       400,
+      CORS_HEADERS,
     );
   }
 
   if (!Array.isArray(paths) || paths.length === 0) {
-    return json({ error: "missing paths" }, 400);
+    return json({ error: "missing paths" }, 400, CORS_HEADERS);
   }
   if (paths.length > MAX_PATHS) {
-    return json({ error: `too many paths (max ${MAX_PATHS})` }, 400);
+    return json({ error: `too many paths (max ${MAX_PATHS})` }, 400, CORS_HEADERS);
   }
 
-  const supabase = createClient(supabaseUrl, serviceRoleKey);
+  const supabase = serviceClient(env);
   const errors: string[] = [];
   const deleted: string[] = [];
   const skipped: string[] = [];
@@ -161,12 +151,12 @@ export async function handler(req: Request): Promise<Response> {
 
     try {
       const response = await fetch(
-        `${supabaseUrl}/storage/v1/object/${bucket}/${rawPath}`,
+        `${env.url}/storage/v1/object/${bucket}/${rawPath}`,
         {
           method: "DELETE",
           headers: {
-            Authorization: `Bearer ${serviceRoleKey}`,
-            apikey: serviceRoleKey,
+            Authorization: `Bearer ${env.key}`,
+            apikey: env.key,
           },
         },
       );
@@ -188,5 +178,5 @@ export async function handler(req: Request): Promise<Response> {
     deleted: deleted.length,
     skipped: skipped.length,
     errors: errors.length > 0 ? errors : undefined,
-  });
+  }, 200, CORS_HEADERS);
 }

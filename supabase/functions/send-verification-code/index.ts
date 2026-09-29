@@ -15,10 +15,9 @@
 // 用它发验证码邮件 = 拿官方 SMTP 凭据当发信跳板。
 // **别再退回「信任网关」的写法**——网关那个设置不在本仓库的可控范围内。
 
-import { createClient } from 'npm:@supabase/supabase-js@2'
+import { readServiceEnv, serviceClient } from '../_shared/client.ts'
+import { CORS_HEADERS, json } from '../_shared/http.ts'
 
-const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
-const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
 const SMTP_HOST = Deno.env.get('SMTP_HOST') ?? ''
 const SMTP_PORT = Number(Deno.env.get('SMTP_PORT') ?? '465')
 const SMTP_USER = Deno.env.get('SMTP_USER') ?? ''
@@ -27,12 +26,6 @@ const SMTP_FROM_NAME = Deno.env.get('SMTP_FROM_NAME') ?? 'PKUSO'
 
 const CODE_LENGTH = 6
 const CODE_EXPIRY_MINUTES = 5
-
-const ok = (body: Record<string, unknown>): Response =>
-  new Response(JSON.stringify(body), {
-    status: 200,
-    headers: { 'Content-Type': 'application/json' },
-  })
 
 /** 生成 6 位数字验证码 */
 function generateCode(): string {
@@ -153,26 +146,22 @@ function buildEmailHtml(code: string, purpose: 'password_change' | 'email_change
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
-    return new Response(null, {
-      status: 204,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-      },
-    })
+    return new Response(null, { status: 204, headers: CORS_HEADERS })
   }
-  if (req.method !== 'POST') return ok({ error: 'method not allowed' })
-  if (!SUPABASE_URL || !SERVICE_ROLE_KEY || !SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
-    return ok({ error: 'server misconfigured' })
+  if (req.method !== 'POST') return json({ error: 'method not allowed' })
+
+  const env = readServiceEnv()
+  if (!env || !SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
+    return json({ error: 'server misconfigured' })
   }
 
   const authHeader = req.headers.get('Authorization')
-  if (!authHeader) return ok({ error: 'missing authorization header' })
+  if (!authHeader) return json({ error: 'missing authorization header' })
 
   const token = authHeader.replace('Bearer ', '')
 
   // 用 service_role 读写 DB
-  const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY)
+  const supabase = serviceClient(env)
 
   // 自己验签，**不依赖网关的 verify_jwt**（原因见文件头）。`getUser` 会拿 token
   // 去 auth 服务校验签名与有效期，伪造的 payload 过不了这一关。
@@ -182,7 +171,7 @@ Deno.serve(async (req) => {
     data: { user },
     error: authError,
   } = await supabase.auth.getUser(token)
-  if (authError || !user) return ok({ error: 'invalid token' })
+  if (authError || !user) return json({ error: 'invalid token' })
 
   const userId = user.id
   const userEmail = user.email ?? ''
@@ -193,7 +182,7 @@ Deno.serve(async (req) => {
   } | null
 
   if (!body?.purpose || !['password_change', 'email_change'].includes(body.purpose)) {
-    return ok({ error: 'invalid purpose' })
+    return json({ error: 'invalid purpose' })
   }
 
   const purpose = body.purpose as 'password_change' | 'email_change'
@@ -202,16 +191,16 @@ Deno.serve(async (req) => {
   let targetEmail: string
   if (purpose === 'password_change') {
     targetEmail = userEmail
-    if (!targetEmail) return ok({ error: 'no bound email' })
+    if (!targetEmail) return json({ error: 'no bound email' })
   } else {
     // email_change: 需要 new_email 参数
-    if (!body.new_email) return ok({ error: 'missing new_email' })
+    if (!body.new_email) return json({ error: 'missing new_email' })
     const newEmail = body.new_email.trim()
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newEmail)) {
-      return ok({ error: 'invalid email format' })
+      return json({ error: 'invalid email format' })
     }
     if (newEmail.toLowerCase() === userEmail.toLowerCase()) {
-      return ok({ error: 'new email same as current' })
+      return json({ error: 'new email same as current' })
     }
     // 检查新邮箱是否已被其他用户占用
     const { data: emailCheck } = await supabase.rpc(
@@ -222,7 +211,7 @@ Deno.serve(async (req) => {
       } as never
     )
     if (emailCheck === true) {
-      return ok({ error: 'email_taken' })
+      return json({ error: 'email_taken' })
     }
     targetEmail = newEmail
   }
@@ -250,7 +239,7 @@ Deno.serve(async (req) => {
 
   if (insertError) {
     console.error('[send-verification-code] insert error', insertError)
-    return ok({ error: 'failed to store code' })
+    return json({ error: 'failed to store code' })
   }
 
   // 发送邮件
@@ -261,8 +250,8 @@ Deno.serve(async (req) => {
     await sendEmail(targetEmail, subject, htmlBody)
   } catch (err) {
     console.error('[send-verification-code] smtp error', err)
-    return ok({ error: 'failed to send email' })
+    return json({ error: 'failed to send email' })
   }
 
-  return ok({ success: true })
+  return json({ success: true })
 })

@@ -10,11 +10,10 @@
 // - 旧码杀死：同 purpose 同邮箱只保留最新活跃验证码
 // - 邮箱格式校验
 
-import { createClient } from 'npm:@supabase/supabase-js@2'
-import { CORS_ALLOW_HEADERS, createLogger } from '../_shared/diag.ts'
+import { readServiceEnv, serviceClient } from '../_shared/client.ts'
+import { createLogger } from '../_shared/diag.ts'
+import { CORS_HEADERS_WITH_DIAG, json } from '../_shared/http.ts'
 
-const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
-const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
 const SMTP_HOST = Deno.env.get('SMTP_HOST') ?? ''
 const SMTP_PORT = Number(Deno.env.get('SMTP_PORT') ?? '465')
 const SMTP_USER = Deno.env.get('SMTP_USER') ?? ''
@@ -24,12 +23,6 @@ const SMTP_FROM_NAME = Deno.env.get('SMTP_FROM_NAME') ?? 'PKUSO'
 const CODE_LENGTH = 6
 const CODE_EXPIRY_MINUTES = 5
 const IP_COOLDOWN_MS = 60_000
-
-const ok = (body: Record<string, unknown>): Response =>
-  new Response(JSON.stringify(body), {
-    status: 200,
-    headers: { 'Content-Type': 'application/json' },
-  })
 
 // --- IP-based cooldown (in-memory, per instance) ---
 const ipLastRequest = new Map<string, number>()
@@ -142,21 +135,17 @@ Deno.serve(async (req) => {
   // 个用户、还是 SMTP 挂了。
   const { log } = createLogger('send-login-code', req)
   if (req.method === 'OPTIONS') {
-    return new Response(null, {
-      status: 204,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': CORS_ALLOW_HEADERS,
-      },
-    })
+    return new Response(null, { status: 204, headers: CORS_HEADERS_WITH_DIAG })
   }
   if (req.method !== 'POST') {
     log('fail', { step: 'method', status: 405, error: 'method not allowed' })
-    return ok({ error: 'method not allowed' })
+    return json({ error: 'method not allowed' })
   }
-  if (!SUPABASE_URL || !SERVICE_ROLE_KEY || !SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
+
+  const env = readServiceEnv()
+  if (!env || !SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
     log('fail', { step: 'config', status: 500, error: 'server misconfigured' })
-    return ok({ error: 'server misconfigured' })
+    return json({ error: 'server misconfigured' })
   }
 
   // IP cooldown
@@ -166,7 +155,7 @@ Deno.serve(async (req) => {
     // 客户端于是提示「已发送」而用户永远收不到——这类「假成功」只能靠这行日志认出。
     // 不记 IP：diag 已经能把这次请求和客户端对上，IP 只会往日志里塞个人信息。
     log('fail', { step: 'cooldown', status: 200, error: 'ip cooldown' })
-    return ok({ success: true }) // 静默拒绝，防枚举
+    return json({ success: true }) // 静默拒绝，防枚举
   }
 
   const body = (await req.json().catch(() => null)) as { email?: string } | null
@@ -174,10 +163,10 @@ Deno.serve(async (req) => {
 
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     log('fail', { step: 'parse_body', status: 400, error: 'invalid email format' })
-    return ok({ error: 'invalid email format' })
+    return json({ error: 'invalid email format' })
   }
 
-  const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY)
+  const supabase = serviceClient(env)
 
   // 查找邮箱对应的 user_id（通过 profiles 表）
   const { data: profile, error: profileError } = await supabase
@@ -188,14 +177,14 @@ Deno.serve(async (req) => {
 
   if (profileError) {
     log('fail', { step: 'profile_lookup', status: 500, error: 'profile lookup failed', detail: profileError.message })
-    return ok({ success: true }) // 静默，不暴露查询错误
+    return json({ success: true }) // 静默，不暴露查询错误
   }
 
   // 用户不存在时返回 user_not_found（前端引导注册）
   // 注意：这会暴露用户是否存在，但登录场景下可接受（用户已输入邮箱）
   if (!profile) {
     log('ok', { step: 'lookup', result: 'user_not_found' })
-    return ok({ error: 'user_not_found' })
+    return json({ error: 'user_not_found' })
   }
 
   const userId = profile.id
@@ -222,7 +211,7 @@ Deno.serve(async (req) => {
 
   if (insertError) {
     log('fail', { step: 'insert_code', status: 500, error: 'insert failed', detail: insertError.message })
-    return ok({ success: true })
+    return json({ success: true })
   }
 
   // 发送邮件
@@ -234,9 +223,9 @@ Deno.serve(async (req) => {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     log('fail', { step: 'smtp', status: 502, error: 'failed to send email', detail: msg })
-    return ok({ error: 'failed to send email' })
+    return json({ error: 'failed to send email' })
   }
 
   log('ok', { step: 'sent' })
-  return ok({ success: true })
+  return json({ success: true })
 })

@@ -1,4 +1,5 @@
 import { requireUser } from "../_shared/auth.ts";
+import { CORS_HEADERS, json } from "../_shared/http.ts";
 import { shapeOcrResponse } from "./shape.ts";
 
 /*
@@ -10,11 +11,6 @@ import { shapeOcrResponse } from "./shape.ts";
  * 拆分本身零行为变化：部署路径仍是 `ocr-analyze/index.ts`。
  */
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-};
-
 /**
  * OCR.space 支持的引擎号。默认 2 —— 与上一版硬编码的值一致，调用方不传就什么都不变。
  * 暴露出来是因为引擎选择是**每次调用**的质量旋钮：1 对干净排版的文档有时比 2 准，
@@ -24,30 +20,24 @@ const ENGINES = new Set([1, 2, 3, 5]);
 
 export async function handler(req: Request): Promise<Response> {
   if (req.method === 'OPTIONS') {
-    return new Response(null, { status: 204, headers: corsHeaders });
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
   }
 
   // 网关不验签（CI 用 --no-verify-jwt 部署，config.toml 的 verify_jwt 是死配置），
   // 所以必须在这里自己验 —— 否则拿到公开 publishable key 的任何人就能烧 OCR.space 的额度。
-  const auth = await requireUser(req, corsHeaders);
+  const auth = await requireUser(req, CORS_HEADERS);
   if (!auth.ok) return auth.response;
 
   try {
     const { file_base64, mime_type, language, overlay, engine } = await req.json();
 
     if (!file_base64) {
-      return new Response(
-        JSON.stringify({ success: false, error: 'file_base64 is required' }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return json({ success: false, error: 'file_base64 is required' }, 400, CORS_HEADERS);
     }
 
     const apiKey = Deno.env.get('OCR_SPACE_API_KEY');
     if (!apiKey) {
-      return new Response(
-        JSON.stringify({ success: false, error: 'OCR_SPACE_API_KEY not configured' }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return json({ success: false, error: 'OCR_SPACE_API_KEY not configured' }, 500, CORS_HEADERS);
     }
 
     // Accept both PDF and image from frontend
@@ -81,13 +71,10 @@ export async function handler(req: Request): Promise<Response> {
     const ocrData = await ocrResponse.json();
 
     if (ocrData.IsErroredOnProcessing) {
-      return new Response(
-        JSON.stringify({
-          success: false,
-          error: ocrData.ErrorMessage?.[0] || 'OCR processing failed'
-        }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return json({
+        success: false,
+        error: ocrData.ErrorMessage?.[0] || 'OCR processing failed'
+      }, 400, CORS_HEADERS);
     }
 
     // text / pageCount / pages 都来自这里；`text` 仍是第一页的文本，老调用方一字不变
@@ -108,41 +95,32 @@ export async function handler(req: Request): Promise<Response> {
     // 502（而不是 400）：不是调用方的错，是上游没给结果 —— 顺带让前端既有的
     // `OCR_TRANSIENT`（含 `HTTP 5\d\d`）重试逻辑对它生效（瞬时限流重试一次可能就好了）。
     if (shaped.pageCount === 0) {
-      return new Response(
-        JSON.stringify({
-          success: false,
-          error: '上游未返回任何识别结果（配额用尽或限流，也可能是图片不可识别）',
-          upstreamPages: 0,
-        }),
-        { status: 502, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return json({
+        success: false,
+        error: '上游未返回任何识别结果（配额用尽或限流，也可能是图片不可识别）',
+        upstreamPages: 0,
+      }, 502, CORS_HEADERS);
     }
 
-    return new Response(
-      JSON.stringify({
-        // 展开放**前面**：`shaped` 将来若多出一个叫 success/language/overlay/engine 的字段，
-        // 显式的这几个必须赢。反过来的话重复键会被静默覆盖 —— 而本仓三条链路都不做类型检查
-        //（deno test 只检查被 import 的模块、部署走 esbuild 打包、CI 里没有 check 步骤），
-        // 覆盖了也没人会发现。现在有 index.test.ts 盯着这一条了。
-        ...shaped,
-        success: true,
-        language: language || 'auto',
-        // 请求侧回显：它答的是「这一次到底有没有要坐标」。判据是严格 `=== true`，
-        // 所以 `overlay: "true"`（字符串，最可能的误用形式）会被判成**不要** ——
-        // 不回显就无从发现。上游到底给没给是**另一件事**，看 `pages[].upstreamHasOverlay`。
-        overlay: wantOverlay,
-        // 同理：非法引擎号会静默回落 2，不回显调用方就分不清拿到的是哪个引擎的结果。
-        engine: engineNo,
-      }),
-      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
+    return json({
+      // 展开放**前面**：`shaped` 将来若多出一个叫 success/language/overlay/engine 的字段，
+      // 显式的这几个必须赢。反过来的话重复键会被静默覆盖 —— 而本仓三条链路都不做类型检查
+      //（deno test 只检查被 import 的模块、部署走 esbuild 打包、CI 里没有 check 步骤），
+      // 覆盖了也没人会发现。现在有 index.test.ts 盯着这一条了。
+      ...shaped,
+      success: true,
+      language: language || 'auto',
+      // 请求侧回显：它答的是「这一次到底有没有要坐标」。判据是严格 `=== true`，
+      // 所以 `overlay: "true"`（字符串，最可能的误用形式）会被判成**不要** ——
+      // 不回显就无从发现。上游到底给没给是**另一件事**，看 `pages[].upstreamHasOverlay`。
+      overlay: wantOverlay,
+      // 同理：非法引擎号会静默回落 2，不回显调用方就分不清拿到的是哪个引擎的结果。
+      engine: engineNo,
+    }, 200, CORS_HEADERS);
   } catch (error) {
-    return new Response(
-      JSON.stringify({
-        success: false,
-        error: error instanceof Error ? error.message : String(error),
-      }),
-      { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
+    return json({
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    }, 400, CORS_HEADERS);
   }
 }

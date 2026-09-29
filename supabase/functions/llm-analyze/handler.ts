@@ -8,6 +8,9 @@ import {
   SECTIONS,
 } from "./analyze.ts";
 import { requireUser } from "../_shared/auth.ts";
+import { CORS_HEADERS, json } from "../_shared/http.ts";
+import { defuseFence } from "../_shared/prompt.ts";
+import { createRetry, fetchJsonWithRetry } from "../_shared/retry.ts";
 
 /*
  * handler 单独成模块，index.ts 只负责把它交给 serve()。
@@ -24,32 +27,12 @@ import { requireUser } from "../_shared/auth.ts";
 const SECTION_LIST = SECTIONS.join("、");
 
 /**
- * 单次上游请求的上限。
+ * 退避对象（实现与理由见 `../_shared/retry.ts`）。
  *
- * 这里最坏要跑 4 次请求 + 7s 退避 —— 单次没有上限的话，一条挂住的连接就能把整个预算
- * 吃光：前端那边总超时一到就报错（用户已经拿到错误），后端还在烧额度。
- *
- * ⚠️ 这里**刻意不写前端那份超时的具体值**：它是跨仓的常量，此前写过一次（30s）而前端
- * 后来改成了别的值，注释就烂在那儿了。要核就回 pkuso-web 的 `analysis.ts` 看。
+ * ⚠️ 仍然**从这里导出**、且是**本模块自己的一份**（`createRetry()` 每次给一个新对象）：
+ * 测试会把它整个换掉（`sleep` 换成记时长的桩），共享单例会让别的函数的用例跟着变。
  */
-const UPSTREAM_TIMEOUT_MS = 8000;
-
-/**
- * 退避基数（毫秒）。第 n 次重试前等 `baseDelayMs * 2^n` —— 默认 1s / 2s / 4s。
- *
- * 导出成**可变**对象只为测试：真等满 7 秒退避会让用例跑 40 秒以上，
- * 那样没人愿意跑它，等于没有回归保护。生产代码不要动这个值。
- *
- * ⚠️ `sleep` 也放在这里（2026-09-25）：**退避的断言过去是量墙钟的** —— 桩里记
- * `Date.now()` 差值再断言递增，而 `Date.now()` 只有 1ms 分辨率、`setTimeout`
- * 本身也有抖动，负载下会量到 `[3,2,4]` 而红。那不只是「偶尔烦人」：它会让
- * **变异验证读错图**（一红就以为变异被抓住了）。做成可注入之后，断言变成
- * 「**请求的**毫秒数是不是 base×2^n」—— 纯值比较，不碰时钟；用例也从 7 秒变瞬时。
- */
-export const retry = {
-  baseDelayMs: 1000,
-  sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
-};
+export const retry = createRetry();
 
 /**
  * 两个入参字段的长度上界（pkuso-backend#42）。
@@ -162,16 +145,6 @@ function exceedsCodePointsAfterStrip(s: string, max: number): boolean {
   return false;
 }
 
-/** fetch 抛出来的错误 —— 只取类型与消息，这类是网络层信息，给前端看没有风险。 */
-function describeUpstreamError(err: unknown): string {
-  return err instanceof Error ? `${err.name}: ${err.message}` : String(err);
-}
-
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-};
-
 /**
  * 识别契约见 pkuso-backend#12。
  *
@@ -191,26 +164,6 @@ const corsHeaders = {
  * 没有文件名。所以下面的分支**不再自己判**「算不算空」—— 同一个真值判据写在两处会一起
  * 错，那正是 #41 的形状（入口按真值判、这里也按真值判，两处都放行了 `"   "`）。
  */
-/**
- * 把文本里**能关掉围栏**的引号串拆开（连续 3 个及以上 → 每两个之间插一个空格）。
- *
- * ⚠️ 为什么必须做（pkuso-backend#46）：识别文本是**任意页面文字**，整段插在下面那对
- * `"""` 围栏里。内容里只要出现一段 `"""`，围栏就**提前关闭** —— 后面的文字于是落到
- * **prompt 级**（不再是「被引号包住的页面文本」），而且位置紧邻 `结果：`。
- * 这里要区分两件事：①「prompt 里存在攻击者可控的文字」是**固有**的（页面文字本来就
- * 什么都有，靠字符过滤解决不了）；②「内容能把**围栏**关掉、把数据升级成指令」是**能修**
- * 的 —— 就是这里这一步。
- *
- * ⚠️ 只插空格、**不改字符本身**：算 `evidenceFound` 的 `normalizeForMatch` 会把所有
- * 非字母数字都剥掉，两边都剥 ⇒ 引文匹配不受影响（引文里出现 `"""` 也照样匹配得上）。
- *
- * ⚠️ 与 `../../segment-parts/handler.ts` 里那份**必须一致**：同一个形状、同一个理由，而两个
- * Edge Function 各自独立部署、没有共享模块可放 —— 改一处就要改两处。
- */
-function defuseFence(text: string): string {
-  return text.replace(/"+/g, (run) => (run.length >= 3 ? run.split("").join(" ") : run));
-}
-
 function buildPrompt(text: string, fileName = ""): string {
   return `你是乐团谱务助手。下面是一份分谱首页的识别文本。
 请判断这份谱子属于哪个声部、是什么乐器。
@@ -327,12 +280,12 @@ ${
  */
 export async function handler(req: Request): Promise<Response> {
   if (req.method === 'OPTIONS') {
-    return new Response(null, { status: 204, headers: corsHeaders });
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
   }
 
   // 网关不验签（CI 用 --no-verify-jwt 部署，config.toml 的 verify_jwt 是死配置），
   // 所以必须在这里自己验 —— 否则拿到公开 publishable key 的任何人就能烧 DeepSeek 的额度。
-  const auth = await requireUser(req, corsHeaders);
+  const auth = await requireUser(req, CORS_HEADERS);
   if (!auth.ok) return auth.response;
 
   try {
@@ -371,13 +324,10 @@ export async function handler(req: Request): Promise<Response> {
      */
     const rawName = body?.file_name;
     if (rawName !== undefined && rawName !== null && typeof rawName !== "string") {
-      return new Response(
-        JSON.stringify({
-          success: false,
-          error: 'file_name must be a string when provided',
-        }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return json({
+        success: false,
+        error: 'file_name must be a string when provided',
+      }, 400, CORS_HEADERS);
     }
     // 「给了、但等于没给」的文件名归一成空串（pkuso-backend#40）：只由零宽字符/不可见
     // 字符组成的名字，`.trim()` 之后**仍非空**（规范就不剥 `\p{Cf}`），进 prompt 就是一行
@@ -399,22 +349,16 @@ export async function handler(req: Request): Promise<Response> {
     // 而「幸存 ≤200 但 raw 极长」的名字只会是构造出来的。
     // ⚠️ 它**不改**「界数幸存码点」那条口径 —— 空名在上面就短路了（#42 那条零宽名字用例不受影响）。
     if (!isBlank && trimmedName.length > MAX_FILE_NAME_CHARS * 32) {
-      return new Response(
-        JSON.stringify({
-          success: false,
-          error: `file_name must be at most ${MAX_FILE_NAME_CHARS} characters`,
-        }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return json({
+        success: false,
+        error: `file_name must be at most ${MAX_FILE_NAME_CHARS} characters`,
+      }, 400, CORS_HEADERS);
     }
     if (!isBlank && exceedsCodePointsAfterStrip(trimmedName, MAX_FILE_NAME_CHARS)) {
-      return new Response(
-        JSON.stringify({
-          success: false,
-          error: `file_name must be at most ${MAX_FILE_NAME_CHARS} characters`,
-        }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return json({
+        success: false,
+        error: `file_name must be at most ${MAX_FILE_NAME_CHARS} characters`,
+      }, 400, CORS_HEADERS);
     }
     const fileName = isBlank ? "" : trimmedName.replace(STRIP_FROM_NAME, "");
 
@@ -439,175 +383,93 @@ export async function handler(req: Request): Promise<Response> {
     // 把「请只根据文件名判断」那句指令丢掉（前端那条降级路正靠它活着）。
     const promptText = typeof inputText === "string" && !isEffectivelyBlank(inputText) ? inputText : "";
     if (exceedsCodePoints(promptText, MAX_OCR_TEXT_CHARS)) {
-      return new Response(
-        JSON.stringify({
-          success: false,
-          error: `ocr_text must be at most ${MAX_OCR_TEXT_CHARS} characters`,
-        }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return json({
+        success: false,
+        error: `ocr_text must be at most ${MAX_OCR_TEXT_CHARS} characters`,
+      }, 400, CORS_HEADERS);
     }
 
     if (typeof inputText !== 'string' || (promptText === "" && fileName === "")) {
-      return new Response(
-        JSON.stringify({
-          success: false,
-          error:
-            'ocr_text must be a string, and must be non-empty unless a non-empty file_name is provided',
-        }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return json({
+        success: false,
+        error:
+          'ocr_text must be a string, and must be non-empty unless a non-empty file_name is provided',
+      }, 400, CORS_HEADERS);
     }
 
     const apiKey = Deno.env.get('DEEPSEEK_API_KEY');
     if (!apiKey) {
-      return new Response(
-        JSON.stringify({ success: false, error: 'DEEPSEEK_API_KEY not configured' }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return json({ success: false, error: 'DEEPSEEK_API_KEY not configured' }, 500, CORS_HEADERS);
     }
 
     const prompt = buildPrompt(promptText, fileName);
 
-    // 带重试的 DeepSeek 调用
-    const maxRetries = 3;
-    let lastError: string | null = null;
-    // 实际发出去了几次。不能直接用 maxRetries + 1 —— 不可重试的错误
-    // （如上游 400）会立刻 break，那样报出的次数是假的。
-    let attemptsMade = 0;
-
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      attemptsMade = attempt + 1;
-
-      // fetch 本身会抛（连接重置 / DNS / TLS 失败 / 超时）。不套 try 的话异常
-      // 直接冒到最外层 catch —— **一次都不重试**，而这类恰恰是最该重试的瞬时故障。
-      let response: Response;
-      try {
-        response = await fetch(
-          `https://api.deepseek.com/v1/chat/completions`,
-          {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${apiKey}`,
+    // 带重试的 DeepSeek 调用：重试 / 退避 / 单次超时 / 失败报文都在 `../_shared/retry.ts`
+    //（原本这段循环在 segment-parts 里还有一份逐字相同的，两边一起改才会一致）。
+    const outcome = await fetchJsonWithRetry(
+      'https://api.deepseek.com/v1/chat/completions',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: 'deepseek-chat',
+          messages: [
+            {
+              role: 'user',
+              content: prompt,
             },
-            body: JSON.stringify({
-              model: 'deepseek-chat',
-              messages: [
-                {
-                  role: 'user',
-                  content: prompt,
-                },
-              ],
-              temperature: 0,
-              // evidence 让输出变长（要抄一段原文），100 会被截断成非法 JSON
-              max_tokens: 200,
-              response_format: { type: 'json_object' },
-            }),
-            // 单次上限。不设的话一条挂住的连接会吃光整个预算 ——
-            // 前端的总超时一到就报错，后端还在烧额度。
-            signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
-          }
-        );
-      } catch (err) {
-        lastError = `上游请求失败（${describeUpstreamError(err)}）`;
-        if (attempt === maxRetries) break;
-        // ⚠️ 走 `retry.baseDelayMs` 而**不是字面量 1000**（2026-09-25 改）：与下面那条
-        // 「可重试状态码」的路保持一致，否则测试把基数调小时这一条不跟随 —— 实测它因此
-        // 真等了 1s/2s/4s，那条用例跑了 7 秒，而用例注释还写着「base=1ms」。
-        // 生产默认值就是 1000，两者取值一字不差。
-        await retry.sleep(retry.baseDelayMs * Math.pow(2, attempt));
-        continue;
-      }
+          ],
+          temperature: 0,
+          // evidence 让输出变长（要抄一段原文），100 会被截断成非法 JSON
+          max_tokens: 200,
+          response_format: { type: 'json_object' },
+        }),
+      },
+      retry,
+    );
 
-      // 上游 5xx 有时返回 HTML 错误页而不是 JSON。直接 await response.json() 会抛，
-      // 整个重试循环被跳过、外层 catch 回一个与真实原因无关的解析错。
-      // 解析不出来就当上游错误处理，交给下面的重试判定。
-      let data: {
-        error?: { message?: string };
-        choices?: Array<{ message?: { content?: string } }>;
-      } | null = null;
-      // 与「body 是字面 null」区分开：两者都让 data 为 null，但原因不同，
-      // 报文里不能都说成「无法解析」。
-      let unparsable = false;
+    if (outcome.ok) {
+      const data = outcome.data;
+      const rawContent = data.choices?.[0]?.message?.content;
+      // `?.` 只对 null/undefined 短路：上游若把 content 回成数字，`123?.trim()`
+      // 会直接抛，而这行在 try 之外 —— 整个重试循环会被跳过、外层回一个
+      // 把内部表达式泄给前端的 400。
+      const responseText = typeof rawContent === 'string' ? rawContent.trim() : '';
+
+      // 解析失败不再回退到「把整段文本当乐器名做子串匹配」——
+      // 那条兜底正是 English Horn → Horn 这类家族级错误的来源。
+      // 拿不到合法 JSON 就弃权，交给用户填。
+      let analysis: Analysis;
       try {
-        data = await response.json();
+        // ⚠️ 第三个参数是**文件名**：`evidenceFound` 只拿页面文本判，
+        // 引文只在文件名里找得到时走 `evidenceFromFileName`（见 `buildAnalysis`）。
+        // ⚠️ 证据核对传的是**归一后**那一份（模型实际看到的原文）：全空白的 `ocr_text`
+        // 归一成空串，所以「在原文里找到」这条判据面对的是真正发给模型的东西。
+        analysis = buildAnalysis(JSON.parse(responseText), promptText, fileName);
       } catch {
-        unparsable = true;
+        analysis = abstain('bad-json');
       }
 
-      if (response.ok && data && !data.error) {
-        const rawContent = data.choices?.[0]?.message?.content;
-        // `?.` 只对 null/undefined 短路：上游若把 content 回成数字，`123?.trim()`
-        // 会直接抛，而这行在 try 之外 —— 整个重试循环会被跳过、外层回一个
-        // 把内部表达式泄给前端的 400。
-        const responseText = typeof rawContent === 'string' ? rawContent.trim() : '';
-
-        // 解析失败不再回退到「把整段文本当乐器名做子串匹配」——
-        // 那条兜底正是 English Horn → Horn 这类家族级错误的来源。
-        // 拿不到合法 JSON 就弃权，交给用户填。
-        let analysis: Analysis;
-        try {
-          // ⚠️ 第三个参数是**文件名**：`evidenceFound` 只拿页面文本判，
-          // 引文只在文件名里找得到时走 `evidenceFromFileName`（见 `buildAnalysis`）。
-          // ⚠️ 证据核对传的是**归一后**那一份（模型实际看到的原文）：全空白的 `ocr_text`
-          // 归一成空串，所以「在原文里找到」这条判据面对的是真正发给模型的东西。
-          analysis = buildAnalysis(JSON.parse(responseText), promptText, fileName);
-        } catch {
-          analysis = abstain('bad-json');
-        }
-
-        // 字段必须**平铺**在顶层：前端读的是 data.instrument / data.subParts
-        // （pkuso-web upload-modal.tsx）。嵌一层 analysis 会让它读到 undefined，
-        // 而 String(undefined) 是个真值 —— 会建出一个名叫「undefined」的声部。
-        // 加列式 migration 换来的顺序无关性，就靠这个平铺的响应兑现。
-        return new Response(
-          JSON.stringify({ success: true, source: 'llm', ...analysis }),
-          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
-      }
-
-      // 记录错误
-      if (unparsable) {
-        lastError = `上游响应无法解析（HTTP ${response.status}）`;
-      } else if (data === null) {
-        lastError = `上游返回了空响应（HTTP ${response.status}）`;
-      } else {
-        lastError = data.error?.message || `HTTP ${response.status}`;
-      }
-
-      // 两头都要：
-      // - 429 / 5xx —— 标准的瞬时故障
-      // - 2xx 但 body 解析不出来 —— 网关在成功状态码上塞了错误页，也值得重试
-      // 但**不能**把「body 不是 JSON」无条件算作可重试：那会连带把 401/404
-      // 这类客户端错误也重试 4 次。所以用 response.ok 把它限制在成功状态码上。
-      const isRetryable =
-        response.status === 429 || response.status >= 500 || (response.ok && unparsable);
-
-      if (!isRetryable || attempt === maxRetries) {
-        break;
-      }
-
-      // 指数退避：base × 2^attempt —— 默认 1s, 2s, 4s
-      await retry.sleep(retry.baseDelayMs * Math.pow(2, attempt));
+      // 字段必须**平铺**在顶层：前端读的是 data.instrument / data.subParts
+      // （pkuso-web upload-modal.tsx）。嵌一层 analysis 会让它读到 undefined，
+      // 而 String(undefined) 是个真值 —— 会建出一个名叫「undefined」的声部。
+      // 加列式 migration 换来的顺序无关性，就靠这个平铺的响应兑现。
+      return json({ success: true, source: 'llm', ...analysis });
     }
 
     // 所有重试均失败
-    return new Response(
-      JSON.stringify({
-        success: false,
-        error: `LLM API error after ${attemptsMade} attempt(s): ${lastError}`
-      }),
-      { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
+    return json({
+      success: false,
+      error: `LLM API error after ${outcome.attempts} attempt(s): ${outcome.error}`
+    }, 400, CORS_HEADERS);
   } catch (error) {
     // 不回内部异常原文：这里catch 到的多是解构错误、JSON 解析错误这类
     // 与「识别失败」毫无关系、只会误导排查的文本。日志里留全量。
     console.error('llm-analyze 未预期错误:', error);
-    return new Response(
-      JSON.stringify({ success: false, error: '服务内部错误' }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
+    return json({ success: false, error: '服务内部错误' }, 500, CORS_HEADERS);
   }
 }
 
