@@ -1,0 +1,4 @@
+{
+  "supabase/functions/register-with-wechat/index.ts::TS2353": 1,
+  "supabase/functions/wechat-auth/index.ts::TS2353": 1
+}
