@@ -95,11 +95,15 @@ jobs:
           REPO="PKUSO-WebApp/pkuso-mp"
           CLONE_DIR=$(mktemp -d)
 
-          git clone --depth=1 https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git "$CLONE_DIR"
+          # ⚠️ 必须显式 --branch dev：**浅克隆只取默认分支**，而 pkuso-mp 的默认分支
+          # 2026-09-29 已从 dev 改成 main（main 才是「稳定线」的正式默认）。原来那句
+          # 裸 clone + `git checkout dev` 因此报
+          #     error: pathspec 'dev' did not match any file(s) known to git
+          # 而且这个失败**不会自动被发现**：类型同步断了，前端只是悄悄停止收到更新。
+          git clone --depth=1 --branch dev https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git "$CLONE_DIR"
           cd "$CLONE_DIR"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout dev
 
           mkdir -p src/types
           cp "${{ github.workspace }}/src/types/database.types.ts" src/types/database.types.ts
@@ -129,11 +133,13 @@ jobs:
           REPO="PKUSO-WebApp/pkuso-web"
           CLONE_DIR=$(mktemp -d)
 
-          git clone --depth=1 https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git "$CLONE_DIR"
+          # 同上一节的道理：显式写分支，不要依赖「默认分支恰好是 main」。
+          # pkuso-web 的默认分支目前就是 main，所以这句现在是对的 —— 但一旦默认分支
+          # 再变，裸 clone + `git checkout main` 会与上面那个 dev 的坑一模一样地失败。
+          git clone --depth=1 --branch main https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git "$CLONE_DIR"
           cd "$CLONE_DIR"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout main
 
           mkdir -p src/types
           cp "${{ github.workspace }}/src/types/database.types.ts" src/types/database.types.ts
