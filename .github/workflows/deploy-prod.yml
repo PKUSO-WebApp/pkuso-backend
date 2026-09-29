@@ -85,6 +85,10 @@ jobs:
             # Revert extra migrations
             for version in $EXTRA_IN_PROD; do
               echo "Reverting migration $version..."
+              # 这一处的 `|| true` **保留**，与上面 db push 那条不同：
+              # 「把一个 prod 独有的版本标成已回滚」本来就可能无事可做（版本已经不在），
+              # 那种非零退出不代表部署出了问题。判据是**失败之后 prod 会不会停在错误状态**：
+              # 这里不会（下一句的 db push 会照常按对账结果走）。
               supabase migration repair --status reverted "$version" || true
             done
           fi
@@ -92,7 +96,18 @@ jobs:
           # Apply missing migrations
           if [ -n "$MISSING_IN_PROD" ]; then
             echo "Applying missing migrations..."
-            supabase db push --include-all || true
+            # ⚠️ **不要在这里加 `|| true`**（2026-09-30 去掉）。
+            #
+            # 它此前的意思是「迁移失败也别让 workflow 变红」—— 而那条路正是最需要变红的：
+            # migration 没应用上去，function 照部署、类型照生成，**整个 workflow 全绿**，
+            # 而 prod 的 schema 停在旧版。2026-09-29 实测过这条路的代价：两条收紧**生产
+            # RLS 权限**的 migration 应用与否，只能靠事后打探针才知道（当时是靠
+            # `has_table_privilege` + 一条幽灵 DELETE 探针确认的），绿勾本身说明不了任何事。
+            #
+            # 有人加它的理由可能是「db push 有时会因良性原因非零退出」。**实测不是**：
+            # 2026-09-29 那次 prod 部署的日志结尾是 `Finished supabase db push.`，
+            # 正常路径退出码是 0。
+            supabase db push --include-all
           fi
           
           echo "Migration history synced!"
