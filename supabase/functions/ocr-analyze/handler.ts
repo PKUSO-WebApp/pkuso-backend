@@ -1,3 +1,4 @@
+import { requireUser } from "../_shared/auth.ts";
 import { shapeOcrResponse } from "./shape.ts";
 
 /*
@@ -25,6 +26,11 @@ export async function handler(req: Request): Promise<Response> {
   if (req.method === 'OPTIONS') {
     return new Response(null, { status: 204, headers: corsHeaders });
   }
+
+  // 网关不验签（CI 用 --no-verify-jwt 部署，config.toml 的 verify_jwt 是死配置），
+  // 所以必须在这里自己验 —— 否则拿到公开 publishable key 的任何人就能烧 OCR.space 的额度。
+  const auth = await requireUser(req, corsHeaders);
+  if (!auth.ok) return auth.response;
 
   try {
     const { file_base64, mime_type, language, overlay, engine } = await req.json();

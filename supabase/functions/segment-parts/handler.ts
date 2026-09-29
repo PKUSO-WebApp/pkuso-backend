@@ -1,3 +1,4 @@
+import { requireUser } from "../_shared/auth.ts";
 import { MAX_CUTS, parseSegmentPlan, planToRanges, type PageText } from "./segment.ts";
 
 /*
@@ -188,6 +189,11 @@ export async function handler(req: Request): Promise<Response> {
   if (req.method === 'OPTIONS') {
     return new Response(null, { status: 204, headers: corsHeaders });
   }
+
+  // 网关不验签（CI 用 --no-verify-jwt 部署，config.toml 的 verify_jwt 是死配置），
+  // 所以必须在这里自己验 —— 否则拿到公开 publishable key 的任何人就能烧 DeepSeek 的额度。
+  const auth = await requireUser(req, corsHeaders);
+  if (!auth.ok) return auth.response;
 
   try {
     // 请求体不是合法 JSON 时别把解析器原文回给前端（同 llm-analyze）
