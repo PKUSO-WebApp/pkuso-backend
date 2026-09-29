@@ -4,10 +4,16 @@
 // 用途：password_change（发到绑定邮箱）/ email_change（发到新邮箱）
 //
 // 安全设计：
-// - verify_jwt=true：仅登录用户可调用
+// - **本函数自己验签**（`auth.getUser(token)`），不依赖网关的 verify_jwt 设置
 // - 同 purpose 同用户仅保留最新码，旧码自动标记 used
 // - 60 秒冷却：前端控制倒计时，服务端不额外限制（依赖 DB 中旧码被杀死）
-// - JWT 验证由 Supabase 网关完成（verify_jwt=true），function 内直接解析 payload
+//
+// ⚠️ 这里曾经写的是「JWT 验证由 Supabase 网关完成（verify_jwt=true），function 内
+// 直接解析 payload」，并按那个前提只做 base64 解码。**那个前提不成立**：CI 用
+// `--no-verify-jwt` 部署（sync-dev.yml / deploy-prod.yml），2026-09-29 查 prod，
+// 12 个函数全是 verify_jwt=false。于是伪造 payload 就能以任意 sub/email 调用本函数，
+// 用它发验证码邮件 = 拿官方 SMTP 凭据当发信跳板。
+// **别再退回「信任网关」的写法**——网关那个设置不在本仓库的可控范围内。
 
 import { createClient } from 'npm:@supabase/supabase-js@2'
 
@@ -38,19 +44,6 @@ function generateCode(): string {
 /** RFC 2047 编码（用于 Subject / From 等含非 ASCII 的 header） */
 function encodeRfc2047(value: string): string {
   return `=?UTF-8?B?${btoa(unescape(encodeURIComponent(value)))}?=`
-}
-
-/** 从 JWT payload 解析 user_id + email（verify_jwt=true 时网关已验证签名） */
-function parseJwtPayload(token: string): { sub: string; email?: string } | null {
-  try {
-    const parts = token.split('.')
-    if (parts.length !== 3) return null
-    const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')))
-    if (!payload.sub) return null
-    return { sub: payload.sub as string, email: payload.email as string | undefined }
-  } catch {
-    return null
-  }
 }
 
 /** 简易 SMTP 发送（TCP over TLS） */
@@ -178,15 +171,21 @@ Deno.serve(async (req) => {
 
   const token = authHeader.replace('Bearer ', '')
 
-  // verify_jwt=true 时网关已验证签名，直接从 payload 解析 user_id + email
-  const claims = parseJwtPayload(token)
-  if (!claims?.sub) return ok({ error: 'invalid token' })
-
-  const userId = claims.sub
-  const userEmail = claims.email ?? ''
-
-  // 用 service_role 读写 DB（不经过 getUser 再验证一次 session）
+  // 用 service_role 读写 DB
   const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY)
+
+  // 自己验签，**不依赖网关的 verify_jwt**（原因见文件头）。`getUser` 会拿 token
+  // 去 auth 服务校验签名与有效期，伪造的 payload 过不了这一关。
+  // 顺带：`user.email` 来自 auth.users，比 JWT 里自带的 claim 更可信。
+  // 同仓库 `verify-and-update` 一直是这么写的，这里与它对齐。
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser(token)
+  if (authError || !user) return ok({ error: 'invalid token' })
+
+  const userId = user.id
+  const userEmail = user.email ?? ''
 
   const body = (await req.json().catch(() => null)) as {
     purpose?: string
