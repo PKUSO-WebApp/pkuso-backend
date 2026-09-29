@@ -14,20 +14,22 @@ name: Functions Test
 # 只能靠静态检查兜住（那条守卫就是这么发现 segment-parts 漏 import serve 的）。
 
 on:
-  # ⚠️ paths 里必须带上「它自己」与 `scripts/**`：否则改动这个 workflow 或闸门脚本时
-  #    **一次都不会跑**，接线错了也看不出来。实测过这个坑：2026-09-29 的 PR #64 改的是
-  #    workflow 与文档，四条 workflow 一个都没触发，CI 上等于没检查。
+  # ⚠️ 这里**故意不加 `paths` 过滤**（2026-09-30 去掉）。
+  #
+  # 原来的过滤只有 `supabase/functions/**` 与 `scripts/**`，于是**改 migration 的 PR
+  # 一次都不跑** —— 2026-09-29 那两条改**生产 RLS 权限**的 migration PR（#71 / #72）
+  # 在 CI 上就是零检查。路径过滤在这里省下的是几秒钟，赔掉的是唯一的机器信号。
+  #
+  # 原来那条注释担心的是「改这个 workflow 或 `scripts/` 时一次都不会跑」，那是**同一个病**：
+  # 把「要不要检查」交给一份手写的路径清单，清单漏一项就静默不查
+  # （实测过：PR #64 改 workflow 与文档，四条 workflow 一个都没触发）。
+  # **去掉过滤 = 没有可漏的清单。** 代价是文档 PR 也会跑一次（约 8 秒）。
+  #
+  # 配套：规则集里把 `deno-test` 设成必需检查。**顺序不能反** —— 先加必需检查、
+  # 后去掉过滤的话，那期间所有 migration PR 会被一个永不出现的检查卡死。
   pull_request:
-    paths:
-      - 'supabase/functions/**'
-      - 'scripts/**'
-      - '.github/workflows/functions-test.yml'
   push:
     branches: [main]
-    paths:
-      - 'supabase/functions/**'
-      - 'scripts/**'
-      - '.github/workflows/functions-test.yml'
 
 jobs:
   deno-test:
