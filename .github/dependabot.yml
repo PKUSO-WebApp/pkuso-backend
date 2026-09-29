@@ -1,0 +1,19 @@
+# Dependabot 配置
+#
+# 背景（2026-09-29 审计）：三个仓库此前都没有这个文件，backend / mp 的 Dependabot 告警
+# 甚至是**被显式关闭**的（已重新打开）。
+#
+# ⚠️ 这里**只有 github-actions**，没有 npm/deno：
+#   本仓库没有 `package.json`、也没有 `deno.json` —— Edge Function 直接写
+#   `npm:@supabase/supabase-js@2` 与 `deno.land/std@...` 的 URL，Supabase 在部署时
+#   自己合成 import map。没有清单文件，Dependabot 就没有可对比、可升级的对象。
+#   ⇒ **函数里的依赖版本要人工留意**；`npm:@supabase/supabase-js@2` 这种浮动主版本尤其
+#     容易在小版本里改变行为（web 端那边已经因为 supabase-js 落后 19 个 minor 吃过亏）。
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    commit-message:
+      prefix: "ci(deps)"
