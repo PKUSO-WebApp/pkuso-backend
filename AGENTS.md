@@ -56,6 +56,18 @@ bash scripts/gate.sh
 
 **闸门的唯一定义在 `scripts/gate.sh`** —— CI 的 `Functions Test` 与人调的是同一个文件。在此之前，这条命令只写在 `functions-test.yml` 里，仓库里没有对应的本地入口，于是只能靠散文说「记得跑 `deno test`」——而那正是最容易不发生的事（`functions-test.yml` 的注释自己就这么写着）。
 
+### git hook（本地便利，**不是**门）
+
+```bash
+git config core.hooksPath .githooks     # 每个克隆一次，没法提交
+```
+
+装好之后推 `main` 会先跑一次闸门（推 WIP 分支不挡）。
+
+⚠️ **但它不是可靠的门**：没装就是没有（`core.hooksPath` 在 `.git/config` 里、不进版本控制），而且可以 `git push --no-verify` 绕过。
+
+**真正的兜底是 CI 的必需检查**（规则集里的 `deno-test`）—— 那个绕不过去。hook 只是让你**在推之前**就知道。
+
 ⚠️ 它**覆盖不到**什么，改后端前必须知道：
 
 - migration 的 SQL 一行都不检查（本仓库没有 migration 的 lint / 干跑）
