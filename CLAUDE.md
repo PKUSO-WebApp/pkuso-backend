@@ -48,6 +48,20 @@ PKUSO 后端仓库 — 数据库 schema、Edge Functions、类型定义的唯一
 - **不要让两个 workflow 写同一个文件**。在这条规矩之前，`sync-dev.yml` 和 `deploy-prod.yml` 都往 web `main` 与 mp `dev` 写类型，commit message 还完全一样 —— 同一个文件两个写入者、内容来自两个环境，事后无法分辨来源；而且 web 的 `gen-types-check` 比对的是 prod，于是每次「migration 已进 dev、还没跑 prod 部署」的窗口里 CI 必然假红（实测 run 36312148142）。
 - 跨仓类型提交都带 `[skip ci]`，GitHub 原生跳过下游 workflow（mp 的版本号回写也靠这条）。
 
+## 本地闸门
+
+```bash
+bash scripts/gate.sh
+```
+
+**闸门的唯一定义在 `scripts/gate.sh`** —— CI 的 `Functions Test` 与人调的是同一个文件。在此之前，这条命令只写在 `functions-test.yml` 里，仓库里没有对应的本地入口，于是只能靠散文说「记得跑 `deno test`」——而那正是最容易不发生的事（`functions-test.yml` 的注释自己就这么写着）。
+
+⚠️ 它**覆盖不到**什么，改后端前必须知道：
+
+- migration 的 SQL 一行都不检查（本仓库没有 migration 的 lint / 干跑）
+- **12 个函数里有 8 个没有测试**，含整条登录/鉴权链路。2026-09-29 查出的两个无鉴权端点正是在那片空白里
+- `supabase/config.toml` 与实际部署状态是否一致，也不检查（实测：`config.toml` 里 5 条 `verify_jwt = true` 全是死配置，因为 CI 用 `--no-verify-jwt` 部署）
+
 ## CI/CD 流程
 
 ### dev 环境（自动）

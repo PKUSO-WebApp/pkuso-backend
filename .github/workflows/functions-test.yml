@@ -14,13 +14,20 @@ name: Functions Test
 # 只能靠静态检查兜住（那条守卫就是这么发现 segment-parts 漏 import serve 的）。
 
 on:
+  # ⚠️ paths 里必须带上「它自己」与 `scripts/**`：否则改动这个 workflow 或闸门脚本时
+  #    **一次都不会跑**，接线错了也看不出来。实测过这个坑：2026-09-29 的 PR #64 改的是
+  #    workflow 与文档，四条 workflow 一个都没触发，CI 上等于没检查。
   pull_request:
     paths:
       - 'supabase/functions/**'
+      - 'scripts/**'
+      - '.github/workflows/functions-test.yml'
   push:
     branches: [main]
     paths:
       - 'supabase/functions/**'
+      - 'scripts/**'
+      - '.github/workflows/functions-test.yml'
 
 jobs:
   deno-test:
@@ -32,5 +39,8 @@ jobs:
         with:
           deno-version: v2.x
 
+      # 闸门的唯一定义在 scripts/gate.sh（内容就是下面那条 deno test）。
+      # 以前命令只写在这里，仓库里没有本地闸门对应的东西，于是 AGENTS/CLAUDE.md
+      # 只能靠散文说「记得跑 deno test」。现在 CI 与人调的是同一个文件。
       - name: Run function tests
-        run: deno test --allow-env --allow-read supabase/functions/
+        run: bash scripts/gate.sh
