@@ -97,13 +97,18 @@ git config core.hooksPath .githooks     # 每个克隆一次，没法提交
 4. `supabase gen types` → 更新 `types/database.types.ts` 并提交回本仓库 `main`
 5. 把 prod 类型直推到 `pkuso-mp` 的 `main`
 
-⚠️ `db push` 那步带 `|| true`，**部署失败不会让 workflow 变红**。跑完请看日志确认，别只看绿勾。
+⚠️ `db push` 那步以前带 `|| true`（**部署失败不会让 workflow 变红**），2026-09-30 已去掉
+（#76）：migration 没应用上去而现在函数照部署、类型照生成、workflow 全绿，是比变红糟得多的
+状态。**现在绿勾对 db push 是有意义的**；仍在的那一处 `|| true` 只在 `migration repair` 上，
+它是「把一个 prod 独有的版本标成已回滚，本来就可能无事可做」，理由写在那句旁边的注释里。
 
 ## 新增后端变更流程
 
 1. 在 `supabase/migrations/` 创建新的 migration 文件
 2. 如果修改了 Edge Functions，更新 `supabase/functions/` 目录
 3. 如果修改了函数配置，更新 `supabase/config.toml`
-4. 开 PR 到 `main`（PR 阶段只跑 `Audit Check` 与 `Functions Test`，**不会**部署任何东西）
+4. 开 PR 到 `main`（PR 阶段只跑闸门 `scripts/gate.sh`，即 `Functions Test` 那个 job；**不会**部署任何东西）。
+   闸门里与 migration 有关的是 `check-migrations.mjs`：命名格式、版本号重复、新增的 stub、
+   以及**有没有改/删已提交的 migration**。它**不看 SQL 语义** —— 那部分自己验（PR 描述里写清怎么验的）
 5. 合并到 `main` → CI 自动部署到 dev
 6. 需要上线时，手动触发 `Deploy to Prod`

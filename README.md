@@ -16,7 +16,7 @@ PKUSO 后端仓库 — 数据库 schema、Edge Functions、类型定义的唯一
 ├── functions/              # Edge Functions（唯一来源）
 ├── types/
 │   └── database.types.ts   # TypeScript 类型定义（CI 自动生成）
-├── audit/                  # MCP 操作审计日志
+├── audit/                  # 历史：早期「直接在库上改」的记录（现在的规矩是全部走 migration）
 ├── scripts/                # 工具脚本
 └── .github/workflows/      # CI/CD 配置
 ```
