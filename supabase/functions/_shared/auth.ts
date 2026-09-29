@@ -25,15 +25,22 @@
  *
  * ```ts
  * import { requireUser } from "../_shared/auth.ts";
+ * import { CORS_HEADERS } from "../_shared/http.ts";
  *
  * export async function handler(req: Request): Promise<Response> {
- *   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders });
+ *   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS_HEADERS });
  *
- *   const auth = await requireUser(req, corsHeaders);
+ *   const auth = await requireUser(req, CORS_HEADERS);
  *   if (!auth.ok) return auth.response;   // 401 / 500，已带 CORS 头
  *   // 之后可以用 auth.userId
  * }
  * ```
+ *
+ * ⚠️ 传进来的那份 CORS **是什么就带什么**：本函数不挑、也不补 —— 各函数的 CORS
+ * 并不一致（见 `http.ts` 里那三份常量的说明），这里替它们做主就会改变线上行为。
+ *
+ * CORS 与报文由 `http.ts` 的 `json()` 组装，客户端由 `client.ts` 的工厂建
+ * —— 本模块只留「验签」这一件事。
  *
  * ## 为什么返回联合类型而不是抛异常
  *
@@ -41,7 +48,8 @@
  * 而本仓库的 handler 风格是早退（`if (...) return ...`）—— 顺着它来，少一层嵌套。
  */
 
-import { createClient } from 'npm:@supabase/supabase-js@2'
+import { readServiceEnv, serviceClient } from './client.ts'
+import { json } from './http.ts'
 
 export type AuthOk = { ok: true; userId: string; email: string | null }
 export type AuthFail = { ok: false; response: Response }
@@ -57,24 +65,22 @@ export async function requireUser(
   req: Request,
   corsHeaders: Record<string, string>,
 ): Promise<AuthOk | AuthFail> {
-  const json = (body: unknown, status: number) =>
-    new Response(JSON.stringify(body), {
-      status,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    })
-
   const authHeader = req.headers.get('Authorization')
   if (!authHeader) {
-    return { ok: false, response: json({ error: 'missing authorization header' }, 401) }
+    return {
+      ok: false,
+      response: json({ error: 'missing authorization header' }, 401, corsHeaders),
+    }
   }
 
-  const url = Deno.env.get('SUPABASE_URL') ?? ''
-  const key = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-  if (!url || !key) {
-    return { ok: false, response: json({ error: 'server misconfigured' }, 500) }
+  // env 在这里读、不在模块顶层读：测试是「先 import 再 set env」的（import 会被提升），
+  // 顶层读到的是空。（`client.ts` 的 docblock 记着同一个理由。）
+  const env = readServiceEnv()
+  if (!env) {
+    return { ok: false, response: json({ error: 'server misconfigured' }, 500, corsHeaders) }
   }
 
-  const supabase = createClient(url, key)
+  const supabase = serviceClient(env)
   const token = authHeader.replace('Bearer ', '')
   const {
     data: { user },
@@ -86,7 +92,7 @@ export async function requireUser(
   // 放行一个没有 id 的调用者（`auth.userId` 会是 undefined）。
   // 这是 `_shared/auth.test.ts` 里那条用例逼出来的，不是假想。
   if (error || !user?.id) {
-    return { ok: false, response: json({ error: 'invalid token' }, 401) }
+    return { ok: false, response: json({ error: 'invalid token' }, 401, corsHeaders) }
   }
 
   return { ok: true, userId: user.id, email: user.email ?? null }

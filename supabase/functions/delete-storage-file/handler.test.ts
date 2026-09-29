@@ -6,6 +6,11 @@ import {
   isSafePath,
   MAX_PATHS,
 } from "./handler.ts";
+import {
+  assertResponseHeaders,
+  CORS_JSON_HEADERS,
+  CORS_PREFLIGHT_HEADERS,
+} from "../_shared/http.fixtures.ts";
 
 /**
  * 跑法：`deno test --allow-env supabase/functions/delete-storage-file/`
@@ -247,4 +252,73 @@ Deno.test("方法/报文校验", async () => {
   assertEquals((await handler(new Request("http://x/", { method: "GET" }))).status, 405);
   assertEquals((await handler(new Request("http://x/", { method: "OPTIONS" }))).status, 204);
   assertEquals((await call({ bucket: "community-images", paths: [] })).status, 400);
+});
+
+/**
+ * 响应头（**表驱动**）：每个响应点实际带哪几个头。
+ *
+ * 同 llm-analyze（那里成功路径少写一个参数、响应少了全部 CORS 头却全绿）——
+ * 期望值见 `../_shared/http.fixtures.ts`。本函数**不由浏览器调用**（触发器的
+ * `net.http_post`），CORS 头在这里没有实际作用，但它同样是「原样搬运」的一部分：
+ * 少一个头就是行为变更，这份表让它必须是有意为之。
+ */
+Deno.test("响应头：每个响应点带哪些头（表驱动 —— 少一个 CORS 头这里就红）", async () => {
+  const rows: Array<{
+    name: string;
+    expected: Record<string, string>;
+    run: () => Promise<Response>;
+  }> = [
+    {
+      name: "成功路径",
+      expected: CORS_JSON_HEADERS,
+      run: () => {
+        reset();
+        return call({ bucket: "community-images", paths: ["orphan.jpg"] });
+      },
+    },
+    {
+      name: "400 不在白名单",
+      expected: CORS_JSON_HEADERS,
+      run: () => {
+        reset();
+        return call({ bucket: "sheet-music", paths: ["a.pdf"] });
+      },
+    },
+    {
+      name: "400 报文畸形",
+      expected: CORS_JSON_HEADERS,
+      run: () => {
+        reset();
+        return handler(new Request("http://x/", { method: "POST", body: "not json" }));
+      },
+    },
+    {
+      name: "405 非 POST",
+      expected: CORS_JSON_HEADERS,
+      run: () => handler(new Request("http://x/", { method: "GET" })),
+    },
+    {
+      name: "500 env 缺",
+      expected: CORS_JSON_HEADERS,
+      run: async () => {
+        const saved = Deno.env.get("SUPABASE_URL");
+        Deno.env.delete("SUPABASE_URL");
+        try {
+          return await call({ bucket: "community-images", paths: ["x.jpg"] });
+        } finally {
+          if (saved) Deno.env.set("SUPABASE_URL", saved);
+        }
+      },
+    },
+    {
+      name: "204 预检（只有 CORS 两个头，没有 content-type）",
+      expected: CORS_PREFLIGHT_HEADERS,
+      run: () => handler(new Request("http://x/", { method: "OPTIONS" })),
+    },
+  ];
+
+  for (const row of rows) {
+    assertResponseHeaders(await row.run(), row.expected, row.name);
+  }
+  assertEquals(rows.length >= 6, true, "响应点表被改小了？少一个入口就少一份保护");
 });

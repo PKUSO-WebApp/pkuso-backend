@@ -13,24 +13,13 @@
 // - 合成邮箱域名不可收信，邮箱路径无法登录该账号。
 // - 密钥（WECHAT_APP_ID/WECHAT_APP_SECRET）经 supabase secrets 注入，不入库。
 
-import { createClient } from 'npm:@supabase/supabase-js@2'
-import { CORS_ALLOW_HEADERS, createLogger } from '../_shared/diag.ts'
+import { adminClient, readServiceEnv } from '../_shared/client.ts'
+import { createLogger } from '../_shared/diag.ts'
+import { CORS_HEADERS_WITH_DIAG, json } from '../_shared/http.ts'
+import { UPSTREAM_TIMEOUT_MS } from '../_shared/timeout.ts'
 
-const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
-const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
 const WECHAT_APP_ID = Deno.env.get('WECHAT_APP_ID') ?? ''
 const WECHAT_APP_SECRET = Deno.env.get('WECHAT_APP_SECRET') ?? ''
-
-const json = (status: number, body: Record<string, unknown>): Response =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { 'Content-Type': 'application/json' },
-  })
-
-// 上游调用（微信 code2session、token 交换）必须显式超时：两者都没有默认上限，
-// 对端挂起时函数会一直占着执行槽到 wall-clock 上限，而客户端早已放弃等待——
-// 表现为「用户点了没反应，服务端却查不到任何失败记录」。8s 覆盖实测 1.7–4.4s 的跨境往返。
-const UPSTREAM_TIMEOUT_MS = 8000
 
 Deno.serve(async (req) => {
   // 结构化日志：Supabase 把函数 stdout 收进 function_logs。排查「少数人登录失败」
@@ -40,21 +29,17 @@ Deno.serve(async (req) => {
   // diag 来自客户端请求头，是与客户端那条失败记录对账的唯一凭据（见 _shared/diag.ts）。
   const { log } = createLogger('wechat-auth', req)
   if (req.method === 'OPTIONS') {
-    return new Response(null, {
-      status: 204,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': CORS_ALLOW_HEADERS,
-      },
-    })
+    return new Response(null, { status: 204, headers: CORS_HEADERS_WITH_DIAG })
   }
   if (req.method !== 'POST') {
     log('fail', { step: 'method', status: 405, error: 'method not allowed' })
-    return json(405, { error: 'method not allowed' })
+    return json({ error: 'method not allowed' }, 405)
   }
-  if (!SUPABASE_URL || !SERVICE_ROLE_KEY || !WECHAT_APP_ID || !WECHAT_APP_SECRET) {
+
+  const env = readServiceEnv()
+  if (!env || !WECHAT_APP_ID || !WECHAT_APP_SECRET) {
     log('fail', { step: 'config', status: 500, error: 'server misconfigured' })
-    return json(500, { error: 'server misconfigured' })
+    return json({ error: 'server misconfigured' }, 500)
   }
 
   let code = ''
@@ -65,11 +50,11 @@ Deno.serve(async (req) => {
     if (body.mode === 'register') mode = 'register'
   } catch {
     log('fail', { step: 'parse_body', status: 400, error: 'invalid json body' })
-    return json(400, { error: 'invalid json body' })
+    return json({ error: 'invalid json body' }, 400)
   }
   if (!code) {
     log('fail', { step: 'parse_body', status: 400, error: 'missing code', mode })
-    return json(400, { error: 'missing code' })
+    return json({ error: 'missing code' }, 400)
   }
 
   // 1. code2session：code 换 openid
@@ -89,7 +74,7 @@ Deno.serve(async (req) => {
       detail: err instanceof Error ? err.message : String(err),
       mode,
     })
-    return json(502, { error: 'wechat api unreachable' })
+    return json({ error: 'wechat api unreachable' }, 502)
   }
   if (!wxData.openid) {
     // 微信侧错误码：40029 code 无效/已被使用，45011 频率限制，40226 高风险用户被拦截，
@@ -102,17 +87,15 @@ Deno.serve(async (req) => {
       wx_errmsg: wxData.errmsg ?? null,
       mode,
     })
-    return json(401, {
+    return json({
       error: 'wechat code2session failed',
       detail: wxData.errmsg ?? String(wxData.errcode ?? ''),
-    })
+    }, 401)
   }
   const openid = wxData.openid
   log('step', { step: 'code2session', mode, openid8: openid.slice(0, 8) })
 
-  const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  })
+  const admin = adminClient(env)
 
   // 2. 按 openid 找/建账号
   let userId: string
@@ -131,7 +114,7 @@ Deno.serve(async (req) => {
       error: 'profile lookup failed',
       detail: lookupError.message,
     })
-    return json(500, { error: 'profile lookup failed' })
+    return json({ error: 'profile lookup failed' }, 500)
   }
 
   if (existing) {
@@ -144,20 +127,20 @@ Deno.serve(async (req) => {
         error: 'get user failed',
         detail: userError?.message ?? 'user has no email',
       })
-      return json(500, { error: 'get user failed' })
+      return json({ error: 'get user failed' }, 500)
     }
     email = userData.user.email
 
     // mode="login" 且邮箱为合成邮箱（用户未完成注册）→ 返回 user_not_found
     if (mode === 'login' && email.endsWith('@placeholder.local')) {
       log('ok', { step: 'lookup', result: 'user_not_found', reason: 'placeholder_email', mode })
-      return json(200, { error: 'user_not_found' })
+      return json({ error: 'user_not_found' }, 200)
     }
   } else {
     // mode="login" 且用户不存在 → 返回 user_not_found（由前端弹窗引导注册）
     if (mode === 'login') {
       log('ok', { step: 'lookup', result: 'user_not_found', reason: 'no_openid_match', mode })
-      return json(200, { error: 'user_not_found' })
+      return json({ error: 'user_not_found' }, 200)
     }
 
     isNew = true
@@ -180,7 +163,7 @@ Deno.serve(async (req) => {
           error: 'create user failed',
           detail: createError?.message ?? '',
         })
-        return json(500, { error: 'create user failed', detail: createError?.message ?? '' })
+        return json({ error: 'create user failed', detail: createError?.message ?? '' }, 500)
       }
       createdUserId = created.user.id
       // profile 由 handle_new_user 触发器自动创建，此处补写 openid 映射
@@ -189,7 +172,7 @@ Deno.serve(async (req) => {
       const msg = createErr instanceof Error ? createErr.message : String(createErr)
       if (!msg.includes('email_exists')) {
         log('fail', { step: 'create_user', status: 500, error: 'create user threw', detail: msg })
-        return json(500, { error: 'create user failed', detail: msg })
+        return json({ error: 'create user failed', detail: msg }, 500)
       }
       // email 已存在：按合成邮箱查找已有 auth user
       const { data: existingUsers } = await admin.auth.admin.listUsers({ filter: `email eq ${email}` })
@@ -201,7 +184,7 @@ Deno.serve(async (req) => {
           error: 'email_exists but user not found',
           detail: msg,
         })
-        return json(500, { error: 'email_exists but user not found', detail: msg })
+        return json({ error: 'email_exists but user not found', detail: msg }, 500)
       }
       createdUserId = existingUser.id
       // 补写 openid 映射（profile 可能已存在但缺 wechat_openid）
@@ -221,19 +204,19 @@ Deno.serve(async (req) => {
       error: 'update password failed',
       detail: pwdError.message,
     })
-    return json(500, { error: 'update password failed' })
+    return json({ error: 'update password failed' }, 500)
   }
   log('step', { step: 'rotate_password', isNew })
 
   // 4. password grant 换 session
   let tokenRes: Response
   try {
-    tokenRes = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+    tokenRes = await fetch(`${env.url}/auth/v1/token?grant_type=password`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        apikey: SERVICE_ROLE_KEY,
-        Authorization: `Bearer ${SERVICE_ROLE_KEY}`,
+        apikey: env.key,
+        Authorization: `Bearer ${env.key}`,
       },
       body: JSON.stringify({ email, password }),
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
@@ -245,7 +228,7 @@ Deno.serve(async (req) => {
       error: 'token exchange unreachable',
       detail: err instanceof Error ? err.message : String(err),
     })
-    return json(502, { error: 'token exchange failed' })
+    return json({ error: 'token exchange failed' }, 502)
   }
   if (!tokenRes.ok) {
     // 同一账号并发登录时，两次 rotate_password 会互相覆盖对方的随机密码，
@@ -259,16 +242,16 @@ Deno.serve(async (req) => {
       http_status: tokenRes.status,
       detail: body.slice(0, 200),
     })
-    return json(502, { error: 'token exchange failed' })
+    return json({ error: 'token exchange failed' }, 502)
   }
   const token = (await tokenRes.json()) as { access_token?: string; refresh_token?: string }
   if (!token.access_token || !token.refresh_token) {
     log('fail', { step: 'token_exchange', status: 502, error: 'token payload missing tokens' })
-    return json(502, { error: 'token exchange failed' })
+    return json({ error: 'token exchange failed' }, 502)
   }
 
   log('ok', { mode, isNew })
-  return json(200, {
+  return json({
     access_token: token.access_token,
     refresh_token: token.refresh_token,
     // 新注册用户标记：客户端据此提示「账号已创建，等待管理员审核」

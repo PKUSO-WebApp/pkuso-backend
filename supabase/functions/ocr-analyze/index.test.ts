@@ -1,5 +1,10 @@
 import { assertEquals } from "https://deno.land/std@0.168.0/testing/asserts.ts";
 import { handler } from "./handler.ts";
+import {
+  assertResponseHeaders,
+  CORS_JSON_HEADERS,
+  CORS_PREFLIGHT_HEADERS,
+} from "../_shared/http.fixtures.ts";
 
 /**
  * 跑法：`deno test --allow-env supabase/functions/ocr-analyze/`
@@ -226,4 +231,98 @@ Deno.test("没有 Authorization 头 → 401（网关不验签，函数必须自�
     new Request("http://x/", { method: "POST", body: JSON.stringify({ file_base64: "AAAA" }) }),
   );
   assertEquals(res.status, 401);
+});
+
+/**
+ * 响应头（**表驱动**）：每个响应点实际带哪几个头。
+ *
+ * 同 llm-analyze：那里成功路径少写一个参数、响应少了全部 CORS 头，而套件全绿 ——
+ * 因为当时的断言全在比状态码与报文（本文件此前对响应头只有一条 OPTIONS 的 ACAO），
+ * 改动落在的维度恰好是**响应头**。期望值见 `../_shared/http.fixtures.ts`。
+ */
+Deno.test("响应头：每个响应点带哪些头（表驱动 —— 少一个 CORS 头这里就红）", async () => {
+  const rows: Array<{
+    name: string;
+    expected: Record<string, string>;
+    run: () => Promise<Response>;
+  }> = [
+    {
+      name: "成功路径（浏览器要读的就是这个响应）",
+      expected: CORS_JSON_HEADERS,
+      run: () => {
+        upstream = () => new Response(OK_BODY, { status: 200 });
+        return call({ file_base64: B64 });
+      },
+    },
+    {
+      name: "502 上游 0 页",
+      expected: CORS_JSON_HEADERS,
+      run: () => {
+        upstream = () => new Response('{"ParsedResults":[]}', { status: 200 });
+        return call({ file_base64: B64 });
+      },
+    },
+    {
+      name: "400 上游报错",
+      expected: CORS_JSON_HEADERS,
+      run: () => {
+        upstream = () =>
+          new Response(JSON.stringify({ IsErroredOnProcessing: true, ErrorMessage: ["boom"] }), {
+            status: 200,
+          });
+        return call({ file_base64: B64 });
+      },
+    },
+    {
+      name: "400 缺 file_base64",
+      expected: CORS_JSON_HEADERS,
+      run: () => call({}),
+    },
+    {
+      name: "400 请求体畸形（外层 catch）",
+      expected: CORS_JSON_HEADERS,
+      run: () =>
+        handler(
+          new Request("http://x/", {
+            method: "POST",
+            headers: { Authorization: `Bearer ${TEST_TOKEN}` },
+            body: "{ 这不是 JSON",
+          }),
+        ),
+    },
+    {
+      name: "401 缺 Authorization（失败响应也由本函数带 CORS 头）",
+      expected: CORS_JSON_HEADERS,
+      run: () =>
+        handler(
+          new Request("http://x/", { method: "POST", body: JSON.stringify({ file_base64: B64 }) }),
+        ),
+    },
+    {
+      name: "500 缺 OCR_SPACE_API_KEY",
+      expected: CORS_JSON_HEADERS,
+      run: async () => {
+        const saved = Deno.env.get("OCR_SPACE_API_KEY");
+        Deno.env.delete("OCR_SPACE_API_KEY");
+        try {
+          return await call({ file_base64: B64 });
+        } finally {
+          if (saved) Deno.env.set("OCR_SPACE_API_KEY", saved);
+        }
+      },
+    },
+    {
+      name: "204 预检（只有 CORS 两个头，没有 content-type）",
+      expected: CORS_PREFLIGHT_HEADERS,
+      run: () => handler(new Request("http://x/", { method: "OPTIONS" })),
+    },
+  ];
+
+  for (const row of rows) {
+    assertResponseHeaders(await row.run(), row.expected, row.name);
+  }
+  assertEquals(rows.length >= 8, true, "响应点表被改小了？少一个入口就少一份保护");
+  // 本表的最后几行没碰 upstream，但倒数第 6 行把它设成了「上游报错」—— 复原，免得
+  // 以后有人在**本用例之后**追加用例时被这层隐藏状态咬到。
+  upstream = () => new Response(OK_BODY, { status: 200 });
 });

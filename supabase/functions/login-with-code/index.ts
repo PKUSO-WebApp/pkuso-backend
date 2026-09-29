@@ -8,22 +8,10 @@
 // - 仅校验 purpose='login' 的验证码
 // - 旧码杀死：校验成功后标记所有同 purpose 旧码为 used
 
-import { createClient } from 'npm:@supabase/supabase-js@2'
-import { CORS_ALLOW_HEADERS, createLogger } from '../_shared/diag.ts'
-
-const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
-const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-
-// 上游 token 交换必须显式超时：对端挂起时函数会一直占着执行槽到 wall-clock 上限，
-// 而客户端早已放弃等待——表现为「用户卡在登录中，服务端却查不到任何失败记录」。
-// 与 wechat-auth 同一个常量、同一个理由（那边实测 1.7–4.4s 的跨境往返，8s 留足余量）。
-const UPSTREAM_TIMEOUT_MS = 8000
-
-const json = (status: number, body: Record<string, unknown>): Response =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { 'Content-Type': 'application/json' },
-  })
+import { adminClient, readServiceEnv, serviceClient } from '../_shared/client.ts'
+import { createLogger } from '../_shared/diag.ts'
+import { CORS_HEADERS_WITH_DIAG, json } from '../_shared/http.ts'
+import { UPSTREAM_TIMEOUT_MS } from '../_shared/timeout.ts'
 
 Deno.serve(async (req) => {
   // 结构化日志（见 _shared/diag.ts）：**本函数此前一条日志都没有**——「验证码登录」
@@ -31,21 +19,17 @@ Deno.serve(async (req) => {
   // 并与客户端那条记录用 diag 对上。
   const { log } = createLogger('login-with-code', req)
   if (req.method === 'OPTIONS') {
-    return new Response(null, {
-      status: 204,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': CORS_ALLOW_HEADERS,
-      },
-    })
+    return new Response(null, { status: 204, headers: CORS_HEADERS_WITH_DIAG })
   }
   if (req.method !== 'POST') {
     log('fail', { step: 'method', status: 405, error: 'method not allowed' })
-    return json(405, { error: 'method not allowed' })
+    return json({ error: 'method not allowed' }, 405)
   }
-  if (!SUPABASE_URL || !SERVICE_ROLE_KEY) {
+
+  const env = readServiceEnv()
+  if (!env) {
     log('fail', { step: 'config', status: 500, error: 'server misconfigured' })
-    return json(500, { error: 'server misconfigured' })
+    return json({ error: 'server misconfigured' }, 500)
   }
 
   let email = ''
@@ -56,19 +40,19 @@ Deno.serve(async (req) => {
     code = typeof body.code === 'string' ? body.code.trim() : ''
   } catch {
     log('fail', { step: 'parse_body', status: 400, error: 'invalid json body' })
-    return json(400, { error: 'invalid json body' })
+    return json({ error: 'invalid json body' }, 400)
   }
 
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     log('fail', { step: 'parse_body', status: 400, error: 'invalid email' })
-    return json(400, { error: 'invalid email' })
+    return json({ error: 'invalid email' }, 400)
   }
   if (!code || code.length !== 6) {
     log('fail', { step: 'parse_body', status: 400, error: 'invalid code' })
-    return json(400, { error: 'invalid code' })
+    return json({ error: 'invalid code' }, 400)
   }
 
-  const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY)
+  const supabase = serviceClient(env)
 
   // 1. 查找邮箱对应的用户
   const { data: profile, error: profileError } = await supabase
@@ -86,7 +70,7 @@ Deno.serve(async (req) => {
       error: profileError ? 'profile lookup failed' : 'no such user',
       detail: profileError?.message,
     })
-    return json(401, { error: 'invalid credentials' })
+    return json({ error: 'invalid credentials' }, 401)
   }
 
   const userId = profile.id
@@ -112,7 +96,7 @@ Deno.serve(async (req) => {
       error: codeError ? 'code lookup failed' : 'invalid or expired code',
       detail: codeError?.message,
     })
-    return json(401, { error: 'invalid or expired code' })
+    return json({ error: 'invalid or expired code' }, 401)
   }
 
   // 3. 标记验证码为已使用 + 杀死该用户所有 login 旧码
@@ -124,26 +108,24 @@ Deno.serve(async (req) => {
     .eq('used', false)
 
   // 4. 轮换随机密码 → password grant 换 session
-  const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  })
+  const admin = adminClient(env)
 
   const newPassword = crypto.randomUUID().replace(/-/g, '')
   const { error: pwdError } = await admin.auth.admin.updateUserById(userId, { password: newPassword })
   if (pwdError) {
     log('fail', { step: 'rotate_password', status: 500, error: 'update password failed', detail: pwdError.message })
-    return json(500, { error: 'update password failed' })
+    return json({ error: 'update password failed' }, 500)
   }
   log('step', { step: 'rotate_password' })
 
   let tokenRes: Response
   try {
-    tokenRes = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+    tokenRes = await fetch(`${env.url}/auth/v1/token?grant_type=password`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        apikey: SERVICE_ROLE_KEY,
-        Authorization: `Bearer ${SERVICE_ROLE_KEY}`,
+        apikey: env.key,
+        Authorization: `Bearer ${env.key}`,
       },
       body: JSON.stringify({ email, password: newPassword }),
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
@@ -157,7 +139,7 @@ Deno.serve(async (req) => {
       error: 'token exchange unreachable',
       detail: err instanceof Error ? err.message : String(err),
     })
-    return json(502, { error: 'token exchange failed' })
+    return json({ error: 'token exchange failed' }, 502)
   }
   if (!tokenRes.ok) {
     // 同一账号并发登录时两次轮换密码会互相覆盖，先到的那次必然 invalid_credentials。
@@ -170,16 +152,16 @@ Deno.serve(async (req) => {
       http_status: tokenRes.status,
       detail: body.slice(0, 200),
     })
-    return json(502, { error: 'token exchange failed' })
+    return json({ error: 'token exchange failed' }, 502)
   }
   const token = (await tokenRes.json()) as { access_token?: string; refresh_token?: string }
   if (!token.access_token || !token.refresh_token) {
     log('fail', { step: 'token_exchange', status: 502, error: 'token payload missing tokens' })
-    return json(502, { error: 'token exchange failed' })
+    return json({ error: 'token exchange failed' }, 502)
   }
 
   log('ok', { step: 'session_issued' })
-  return json(200, {
+  return json({
     access_token: token.access_token,
     refresh_token: token.refresh_token,
   })

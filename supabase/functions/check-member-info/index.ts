@@ -8,30 +8,18 @@
 // - 仅返回匹配结果，不暴露敏感信息
 // - 使用 service_role key 绕过 RLS
 
-import { createClient } from 'npm:@supabase/supabase-js@2'
-
-const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
-const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-
-const ok = (body: Record<string, unknown>): Response =>
-  new Response(JSON.stringify(body), {
-    status: 200,
-    headers: { 'Content-Type': 'application/json' },
-  })
+import { readServiceEnv, serviceClient } from '../_shared/client.ts'
+import { CORS_HEADERS, json } from '../_shared/http.ts'
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
-    return new Response(null, {
-      status: 204,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-      },
-    })
+    return new Response(null, { status: 204, headers: CORS_HEADERS })
   }
-  if (req.method !== 'POST') return ok({ error: 'method not allowed' })
-  if (!SUPABASE_URL || !SERVICE_ROLE_KEY) {
-    return ok({ error: 'server misconfigured' })
+  if (req.method !== 'POST') return json({ error: 'method not allowed' })
+
+  const env = readServiceEnv()
+  if (!env) {
+    return json({ error: 'server misconfigured' })
   }
 
   const body = (await req.json().catch(() => null)) as {
@@ -39,11 +27,11 @@ Deno.serve(async (req) => {
   } | null
 
   if (!body?.full_name?.trim()) {
-    return ok({ error: 'missing full_name' })
+    return json({ error: 'missing full_name' })
   }
 
   const fullName = body.full_name.trim()
-  const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY)
+  const supabase = serviceClient(env)
 
   // 查询 member_info 表，按姓名精确匹配
   const { data, error } = await supabase
@@ -54,14 +42,14 @@ Deno.serve(async (req) => {
 
   if (error) {
     console.error('[check-member-info] query error', error)
-    return ok({ error: 'query failed' })
+    return json({ error: 'query failed' })
   }
 
   if (!data) {
-    return ok({ found: false })
+    return json({ found: false })
   }
 
-  return ok({
+  return json({
     found: true,
     email: data.email ?? null,
   })

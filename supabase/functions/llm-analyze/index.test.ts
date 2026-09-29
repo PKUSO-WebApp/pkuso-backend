@@ -1,5 +1,10 @@
 import { handler, retry } from "./handler.ts";
 import { MAX_EXTRA_SECTIONS, MAX_SUB_PARTS } from "./analyze.ts";
+import {
+  assertResponseHeaders,
+  CORS_JSON_HEADERS,
+  CORS_PREFLIGHT_HEADERS,
+} from "../_shared/http.fixtures.ts";
 
 // 把退避压到 1ms：真等 1s/2s/4s 会让整套用例跑 40 秒以上，没人愿意跑就等于没有保护。
 // ⚠️ 光调小基数**不够**（2026-09-25）：退避要**被观测到**才能断言，而过去是靠桩里记
@@ -635,4 +640,72 @@ Deno.test("没有 Authorization 头 → 401（网关不验签，函数必须自�
     new Request("http://localhost/", { method: "POST", body: JSON.stringify({ ocr_text: "x" }) }),
   );
   eq(res.status, 401, "缺 Authorization 必须 401");
+});
+
+/**
+ * 响应头（**表驱动**）：每个响应点实际带哪几个头。
+ *
+ * ## 为什么单独立一条
+ *
+ * 这条是为一次**真的漏过**的缺陷补的（评审阶段才被抓到）：成功路径那句
+ * `json({...}, 200, CORS_HEADERS)` 少写第三个参数 —— 状态码与报文**一字不变**，
+ * 只是响应**少了全部 CORS 头**。而调用方是**浏览器里的 pkuso-web**（`analysis.ts` 的
+ * `functions.invoke`），CORS 校验作用于**实际响应**、不只是预检，于是：
+ * 预检过 → POST 发出去 → **上游额度烧掉** → 浏览器把响应挡住 → 前端只看到一句
+ * 「LLM 请求失败」。
+ *
+ * 当时套件全绿，因为**没有任何一条用例盯着「某个响应点带哪些头」**：既有的断言
+ * 全在比状态码与报文，而改动落在的维度恰好是**响应头**。
+ *
+ * 期望值在 `../_shared/http.fixtures.ts`（手写的，不从实现 derive），判据是**完整的
+ * 头集合** —— 多一个、少一个都要红。
+ */
+Deno.test("响应头：每个响应点带哪些头（表驱动 —— 少一个 CORS 头这里就红）", async () => {
+  const rows: Array<{ name: string; expected: Record<string, string>; run: () => Promise<Response> }> = [
+    {
+      name: '成功路径（浏览器要读的就是这个响应）',
+      expected: CORS_JSON_HEADERS,
+      run: () => {
+        reset(() => new Response(OK_BODY, { status: 200 }));
+        return post({ ocr_text: SRC });
+      },
+    },
+    {
+      name: '400 报文畸形',
+      expected: CORS_JSON_HEADERS,
+      run: () => post('not json'),
+    },
+    {
+      name: '401 缺 Authorization（失败响应也由本函数带 CORS 头）',
+      expected: CORS_JSON_HEADERS,
+      run: () =>
+        handler(
+          new Request('http://localhost/', { method: 'POST', body: JSON.stringify({ ocr_text: SRC }) }),
+        ),
+    },
+    {
+      name: '500 缺 DEEPSEEK_API_KEY',
+      expected: CORS_JSON_HEADERS,
+      run: async () => {
+        const saved = Deno.env.get('DEEPSEEK_API_KEY');
+        Deno.env.delete('DEEPSEEK_API_KEY');
+        try {
+          return await post({ ocr_text: SRC });
+        } finally {
+          if (saved) Deno.env.set('DEEPSEEK_API_KEY', saved);
+        }
+      },
+    },
+    {
+      name: '204 预检（只有 CORS 两个头，没有 content-type）',
+      expected: CORS_PREFLIGHT_HEADERS,
+      run: () => handler(new Request('http://localhost/', { method: 'OPTIONS' })),
+    },
+  ];
+
+  for (const row of rows) {
+    assertResponseHeaders(await row.run(), row.expected, row.name);
+  }
+  // 自检：本表确实取到了响应（否则上面循环可能空转）
+  eq(rows.length >= 5, true, '响应点表被改小了？少一个入口就少一份保护');
 });

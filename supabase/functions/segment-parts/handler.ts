@@ -1,4 +1,7 @@
 import { requireUser } from "../_shared/auth.ts";
+import { CORS_HEADERS, json } from "../_shared/http.ts";
+import { defuseFence } from "../_shared/prompt.ts";
+import { createRetry, fetchJsonWithRetry } from "../_shared/retry.ts";
 import { MAX_CUTS, parseSegmentPlan, planToRanges, type PageText } from "./segment.ts";
 
 /*
@@ -13,37 +16,13 @@ import { MAX_CUTS, parseSegmentPlan, planToRanges, type PageText } from "./segme
  */
 const MAX_PAGE_TEXT_CHARS = 200;
 
-/** 单次上游请求的上限。同 llm-analyze：不设的话一条挂住的连接会吃光整个预算 */
-const UPSTREAM_TIMEOUT_MS = 8000;
-
 /**
- * 退避基数。导出成**可变**对象只为测试（真等满 7 秒会让用例跑 40 秒以上）。
+ * 退避对象（实现与理由见 `../_shared/retry.ts` —— 那里记着「为什么退避的断言不能量墙钟」）。
  *
- * ⚠️ `sleep` 也放在这里（2026-09-25）：退避的断言过去是**量墙钟**的 —— 桩里记
- * `Date.now()` 差值再断言递增。本文件那条用例的注释自己就记着「实测踩过：
- * backoffs 量到 [3,2,4]」，当时的应对是把基数从 1ms 抬到 20ms —— 那是**缓解不是解决**，
- * 负载一上来照样可能颠倒，而它一红就会让**变异验证读错图**（一红就以为变异被抓住了）。
- * 做成可注入之后断言变成「**请求的**毫秒数是不是 base×2^n」，纯值比较、不碰时钟。
+ * ⚠️ 仍然**从这里导出**、且是**本模块自己的一份**（`createRetry()` 每次给一个新对象）：
+ * 测试会把它整个换掉（`sleep` 换成记时长的桩），共享单例会让别的函数的用例跟着变。
  */
-export const retry = {
-  baseDelayMs: 1000,
-  sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
-};
-
-function describeUpstreamError(err: unknown): string {
-  return err instanceof Error ? `${err.name}: ${err.message}` : String(err);
-}
-
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-};
-
-const json = (body: unknown, status: number) =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-  });
+export const retry = createRetry();
 
 /**
  * 请求体校验。**契约违规一律 400，不做「宽容修正」。**
@@ -100,26 +79,6 @@ function validateBody(
  * 一旦发过去，模型会锚定在「应该有 4 段」上，而真实情况可能是短笛 1、2 挤在同一页
  * （那是 `subParts` 的事，不是边界）。分段只以各页文本为准。
  */
-/**
- * 把文本里**能关掉围栏**的引号串拆开（连续 3 个及以上 → 每两个之间插一个空格）。
- *
- * ⚠️ 为什么必须做（pkuso-backend#46）：逐页的识别文本是**任意页面文字**，整段插在下面那对
- * `"""` 围栏里。内容里只要出现一段 `"""`，围栏就**提前关闭** —— 后面的文字于是落到
- * **prompt 级**（不再是「被引号包住的页面文本」），而且位置紧邻 `结果：`。
- * 这里要区分两件事：①「prompt 里存在攻击者可控的文字」是**固有**的（页面文字本来就
- * 什么都有，靠字符过滤解决不了）；②「内容能把**围栏**关掉、把数据升级成指令」是**能修**
- * 的 —— 就是这里这一步。
- *
- * ⚠️ 只插空格、**不改字符本身**：算 `evidenceFound` 的 `normalizeForMatch` 会把所有
- * 非字母数字都剥掉，两边都剥 ⇒ 引文匹配不受影响。
- *
- * ⚠️ 与 `../llm-analyze/handler.ts` 里那份**必须一致**：同一个形状、同一个理由，而两个
- * Edge Function 各自独立部署、没有共享模块可放 —— 改一处就要改两处。
- */
-function defuseFence(text: string): string {
-  return text.replace(/"+/g, (run) => (run.length >= 3 ? run.split("").join(" ") : run));
-}
-
 function buildPrompt(pages: PageText[], pageCount: number): string {
   const withText = new Set(pages.map((p) => p.page));
   const missing: number[] = [];
@@ -187,12 +146,12 @@ ${defuseFence(body)}
 
 export async function handler(req: Request): Promise<Response> {
   if (req.method === 'OPTIONS') {
-    return new Response(null, { status: 204, headers: corsHeaders });
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
   }
 
   // 网关不验签（CI 用 --no-verify-jwt 部署，config.toml 的 verify_jwt 是死配置），
   // 所以必须在这里自己验 —— 否则拿到公开 publishable key 的任何人就能烧 DeepSeek 的额度。
-  const auth = await requireUser(req, corsHeaders);
+  const auth = await requireUser(req, CORS_HEADERS);
   if (!auth.ok) return auth.response;
 
   try {
@@ -205,110 +164,70 @@ export async function handler(req: Request): Promise<Response> {
     }
 
     const checked = validateBody(body);
-    if ("error" in checked) return json({ success: false, error: checked.error }, 400);
+    if ("error" in checked) {
+      return json({ success: false, error: checked.error }, 400, CORS_HEADERS);
+    }
     const { pages, pageCount } = checked;
 
     const apiKey = Deno.env.get('DEEPSEEK_API_KEY');
-    if (!apiKey) return json({ success: false, error: 'DEEPSEEK_API_KEY not configured' }, 500);
-
-    const prompt = buildPrompt(pages, pageCount);
-    const maxRetries = 3;
-    let lastError: string | null = null;
-    let attemptsMade = 0;
-
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      attemptsMade = attempt + 1;
-
-      // fetch 本身会抛（连接重置 / DNS / TLS / 超时）。不套 try 的话异常直接冒到
-      // 最外层 catch —— **一次都不重试**，而这类恰恰是最该重试的瞬时故障。
-      let response: Response;
-      try {
-        response = await fetch(`https://api.deepseek.com/v1/chat/completions`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-          body: JSON.stringify({
-            model: 'deepseek-chat',
-            messages: [{ role: 'user', content: prompt }],
-            temperature: 0,
-            // evidence 让输出变长（每个切点都要抄一段），太小会被截断成非法 JSON
-            max_tokens: 500,
-            response_format: { type: 'json_object' },
-          }),
-          signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
-        });
-      } catch (err) {
-        lastError = `上游请求失败（${describeUpstreamError(err)}）`;
-        if (attempt === maxRetries) break;
-        await retry.sleep(retry.baseDelayMs * Math.pow(2, attempt));
-        continue;
-      }
-
-      // 上游 5xx 有时返回 HTML 错误页而不是 JSON。直接 json() 会抛，
-      // 整个重试循环被跳过、外层回一个与真实原因无关的解析错。
-      let data: {
-        error?: { message?: string };
-        choices?: Array<{ message?: { content?: string } }>;
-      } | null = null;
-      let unparsable = false;
-      try {
-        data = await response.json();
-      } catch {
-        unparsable = true;
-      }
-
-      if (response.ok && data && !data.error) {
-        const rawContent = data.choices?.[0]?.message?.content;
-        // `?.` 只对 null/undefined 短路：上游若把 content 回成数字，`123?.trim()` 会直接抛
-        const responseText = typeof rawContent === 'string' ? rawContent.trim() : '';
-
-        // 解析失败**不弃权整份请求**，而是走「不切」—— 与 parseSegmentPlan 的默认一致：
-        // 不切 = 退回今天的行为（整份当一个声部），用户还能人工改。
-        let parsed: unknown = null;
-        try {
-          parsed = JSON.parse(responseText);
-        } catch {
-          parsed = null;
-        }
-        const plan = parseSegmentPlan(parsed, pages);
-
-        // 平铺在顶层（同 llm-analyze 的约定：前端读 data.cuts）
-        return json(
-          {
-            success: true,
-            source: 'llm',
-            ...plan,
-            // 段区间由**同一份** plan 算出来，省得调用方各写一遍（那是「同一件事两处实现」的起点）
-            ranges: planToRanges(plan, pageCount),
-            pageCount,
-          },
-          200,
-        );
-      }
-
-      if (unparsable) {
-        lastError = `上游响应无法解析（HTTP ${response.status}）`;
-      } else if (data === null) {
-        lastError = `上游返回了空响应（HTTP ${response.status}）`;
-      } else {
-        lastError = data.error?.message || `HTTP ${response.status}`;
-      }
-
-      // 429 / 5xx 是标准瞬时故障；2xx 但 body 解析不出来也值得重试（网关塞错误页）。
-      // 但不能把「body 不是 JSON」无条件算作可重试 —— 那会连带重试 401/404。
-      const isRetryable =
-        response.status === 429 || response.status >= 500 || (response.ok && unparsable);
-
-      if (!isRetryable || attempt === maxRetries) break;
-      await retry.sleep(retry.baseDelayMs * Math.pow(2, attempt));
+    if (!apiKey) {
+      return json({ success: false, error: 'DEEPSEEK_API_KEY not configured' }, 500, CORS_HEADERS);
     }
 
-    return json(
-      { success: false, error: `LLM API error after ${attemptsMade} attempt(s): ${lastError}` },
-      400,
+    const prompt = buildPrompt(pages, pageCount);
+
+    // 带重试的 DeepSeek 调用：重试 / 退避 / 单次超时 / 失败报文都在 `../_shared/retry.ts`
+    //（原本这段循环在 llm-analyze 里还有一份逐字相同的，两边一起改才会一致）。
+    const outcome = await fetchJsonWithRetry(
+      'https://api.deepseek.com/v1/chat/completions',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model: 'deepseek-chat',
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0,
+          // evidence 让输出变长（每个切点都要抄一段），太小会被截断成非法 JSON
+          max_tokens: 500,
+          response_format: { type: 'json_object' },
+        }),
+      },
+      retry,
     );
+
+    if (outcome.ok) {
+      const rawContent = outcome.data.choices?.[0]?.message?.content;
+      // `?.` 只对 null/undefined 短路：上游若把 content 回成数字，`123?.trim()` 会直接抛
+      const responseText = typeof rawContent === 'string' ? rawContent.trim() : '';
+
+      // 解析失败**不弃权整份请求**，而是走「不切」—— 与 parseSegmentPlan 的默认一致：
+      // 不切 = 退回今天的行为（整份当一个声部），用户还能人工改。
+      let parsed: unknown = null;
+      try {
+        parsed = JSON.parse(responseText);
+      } catch {
+        parsed = null;
+      }
+      const plan = parseSegmentPlan(parsed, pages);
+
+      // 平铺在顶层（同 llm-analyze 的约定：前端读 data.cuts）
+      return json({
+        success: true,
+        source: 'llm',
+        ...plan,
+        // 段区间由**同一份** plan 算出来，省得调用方各写一遍（那是「同一件事两处实现」的起点）
+        ranges: planToRanges(plan, pageCount),
+        pageCount,
+      }, 200, CORS_HEADERS);
+    }
+
+    return json({
+      success: false,
+      error: `LLM API error after ${outcome.attempts} attempt(s): ${outcome.error}`,
+    }, 400, CORS_HEADERS);
   } catch (error) {
     // 不回内部异常原文：这里 catch 到的多是解构错误，与「识别失败」无关、只会误导排查
     console.error('segment-parts 未预期错误:', error);
-    return json({ success: false, error: '服务内部错误' }, 500);
+    return json({ success: false, error: '服务内部错误' }, 500, CORS_HEADERS);
   }
 }

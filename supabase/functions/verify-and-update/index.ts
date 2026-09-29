@@ -10,37 +10,25 @@
 //
 // ** 所有响应统一 200，错误码放 body.error（兼容微信小程序 functions.invoke）**
 
-import { createClient } from 'npm:@supabase/supabase-js@2'
-
-const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
-const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-
-const ok = (body: Record<string, unknown>): Response =>
-  new Response(JSON.stringify(body), {
-    status: 200,
-    headers: { 'Content-Type': 'application/json' },
-  })
+import { readServiceEnv, serviceClient } from '../_shared/client.ts'
+import { CORS_HEADERS, json } from '../_shared/http.ts'
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
-    return new Response(null, {
-      status: 204,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-      },
-    })
+    return new Response(null, { status: 204, headers: CORS_HEADERS })
   }
-  if (req.method !== 'POST') return ok({ error: 'method not allowed' })
-  if (!SUPABASE_URL || !SERVICE_ROLE_KEY) {
-    return ok({ error: 'server misconfigured' })
+  if (req.method !== 'POST') return json({ error: 'method not allowed' })
+
+  const env = readServiceEnv()
+  if (!env) {
+    return json({ error: 'server misconfigured' })
   }
 
   // JWT 认证
   const authHeader = req.headers.get('Authorization')
-  if (!authHeader) return ok({ error: 'missing authorization header' })
+  if (!authHeader) return json({ error: 'missing authorization header' })
 
-  const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY)
+  const supabase = serviceClient(env)
 
   // 从 JWT 获取 user_id
   const token = authHeader.replace('Bearer ', '')
@@ -48,7 +36,7 @@ Deno.serve(async (req) => {
     data: { user },
     error: authError,
   } = await supabase.auth.getUser(token)
-  if (authError || !user) return ok({ error: 'invalid token' })
+  if (authError || !user) return json({ error: 'invalid token' })
 
   const userId = user.id
   const body = (await req.json().catch(() => null)) as {
@@ -59,10 +47,10 @@ Deno.serve(async (req) => {
   } | null
 
   if (!body?.purpose || !['password_change', 'email_change'].includes(body.purpose)) {
-    return ok({ error: 'invalid purpose' })
+    return json({ error: 'invalid purpose' })
   }
   if (!body.code || body.code.length !== 6) {
-    return ok({ error: 'invalid code format' })
+    return json({ error: 'invalid code format' })
   }
 
   const purpose = body.purpose as 'password_change' | 'email_change'
@@ -79,19 +67,19 @@ Deno.serve(async (req) => {
     .maybeSingle()
 
   if (queryError || !codeRow) {
-    return ok({ error: 'no valid code found' })
+    return json({ error: 'no valid code found' })
   }
 
   // 检查过期
   const expiresAt = new Date(codeRow.expires_at).getTime()
   if (Date.now() > expiresAt) {
     await supabase.from('verification_codes').update({ used: true }).eq('id', codeRow.id)
-    return ok({ error: 'code expired' })
+    return json({ error: 'code expired' })
   }
 
   // 校验码是否匹配
   if (codeRow.code !== body.code.trim()) {
-    return ok({ error: 'code mismatch' })
+    return json({ error: 'code mismatch' })
   }
 
   // 标记码为 used
@@ -100,21 +88,21 @@ Deno.serve(async (req) => {
   // 执行操作
   if (purpose === 'password_change') {
     if (!body.new_password || body.new_password.trim().length < 6) {
-      return ok({ error: 'password too short' })
+      return json({ error: 'password too short' })
     }
     const { error: updateError } = await supabase.auth.admin.updateUserById(userId, {
       password: body.new_password.trim(),
     })
     if (updateError) {
       console.error('[verify-and-update] password update error', updateError)
-      return ok({ error: 'failed to update password' })
+      return json({ error: 'failed to update password' })
     }
-    return ok({ success: true })
+    return json({ success: true })
   }
 
   // email_change
   if (!body.new_email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.new_email.trim())) {
-    return ok({ error: 'invalid new email' })
+    return json({ error: 'invalid new email' })
   }
   const newEmail = body.new_email.trim()
 
@@ -128,7 +116,7 @@ Deno.serve(async (req) => {
   )
 
   if (emailCheck === true) {
-    return ok({ error: 'email_taken' })
+    return json({ error: 'email_taken' })
   }
 
   // 更新 auth.users.email
@@ -138,10 +126,10 @@ Deno.serve(async (req) => {
   if (updateEmailError) {
     const msg = updateEmailError.message ?? ''
     if (msg.includes('already') || msg.includes('duplicate') || msg.includes('unique')) {
-      return ok({ error: 'email_taken' })
+      return json({ error: 'email_taken' })
     }
     console.error('[verify-and-update] email update error', updateEmailError)
-    return ok({ error: 'failed to update email' })
+    return json({ error: 'failed to update email' })
   }
 
   // 同步 profiles.email
@@ -154,5 +142,5 @@ Deno.serve(async (req) => {
     console.error('[verify-and-update] profile sync error', profileError)
   }
 
-  return ok({ success: true })
+  return json({ success: true })
 })

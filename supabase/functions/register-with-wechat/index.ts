@@ -10,32 +10,21 @@
 // - 合成邮箱域名不可收信
 // - wechat_openid 唯一约束防止重复绑定
 
-import { createClient } from 'npm:@supabase/supabase-js@2'
+import { adminClient, readServiceEnv } from '../_shared/client.ts'
+import { CORS_HEADERS, json } from '../_shared/http.ts'
 
-const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
-const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
 const WECHAT_APP_ID = Deno.env.get('WECHAT_APP_ID') ?? ''
 const WECHAT_APP_SECRET = Deno.env.get('WECHAT_APP_SECRET') ?? ''
 
-const json = (status: number, body: Record<string, unknown>): Response =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { 'Content-Type': 'application/json' },
-  })
-
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
-    return new Response(null, {
-      status: 204,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-      },
-    })
+    return new Response(null, { status: 204, headers: CORS_HEADERS })
   }
-  if (req.method !== 'POST') return json(405, { error: 'method not allowed' })
-  if (!SUPABASE_URL || !SERVICE_ROLE_KEY || !WECHAT_APP_ID || !WECHAT_APP_SECRET) {
-    return json(500, { error: 'server misconfigured' })
+  if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405)
+
+  const env = readServiceEnv()
+  if (!env || !WECHAT_APP_ID || !WECHAT_APP_SECRET) {
+    return json({ error: 'server misconfigured' }, 500)
   }
 
   let code = ''
@@ -58,15 +47,15 @@ Deno.serve(async (req) => {
       isInOrchestra = body.is_in_orchestra
     }
   } catch {
-    return json(400, { error: 'invalid json body' })
+    return json({ error: 'invalid json body' }, 400)
   }
 
-  if (!code) return json(400, { error: 'missing code' })
-  if (!fullName) return json(400, { error: 'missing full_name' })
-  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return json(400, { error: 'invalid email' })
-  if (!instrument) return json(400, { error: 'missing instrument' })
-  if (!college) return json(400, { error: 'missing college' })
-  if (!joinDate) return json(400, { error: 'missing join_date' })
+  if (!code) return json({ error: 'missing code' }, 400)
+  if (!fullName) return json({ error: 'missing full_name' }, 400)
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return json({ error: 'invalid email' }, 400)
+  if (!instrument) return json({ error: 'missing instrument' }, 400)
+  if (!college) return json({ error: 'missing college' }, 400)
+  if (!joinDate) return json({ error: 'missing join_date' }, 400)
 
   // 1. code2session：code 换 openid
   const wxUrl =
@@ -78,19 +67,17 @@ Deno.serve(async (req) => {
     const wxRes = await fetch(wxUrl)
     wxData = (await wxRes.json()) as typeof wxData
   } catch {
-    return json(502, { error: 'wechat api unreachable' })
+    return json({ error: 'wechat api unreachable' }, 502)
   }
   if (!wxData.openid) {
-    return json(401, {
+    return json({
       error: 'wechat code2session failed',
       detail: wxData.errmsg ?? String(wxData.errcode ?? ''),
-    })
+    }, 401)
   }
   const openid = wxData.openid
 
-  const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  })
+  const admin = adminClient(env)
 
   // 2. 检查 openid 是否已绑定
   const { data: existingProfile, error: lookupError } = await admin
@@ -100,10 +87,10 @@ Deno.serve(async (req) => {
     .maybeSingle()
 
   if (lookupError) {
-    return json(500, { error: 'profile lookup failed' })
+    return json({ error: 'profile lookup failed' }, 500)
   }
   if (existingProfile) {
-    return json(409, { error: 'wechat_already_bound' })
+    return json({ error: 'wechat_already_bound' }, 409)
   }
 
   // 3. 创建 auth user
@@ -130,10 +117,10 @@ Deno.serve(async (req) => {
           userId = existingUser.id
           await admin.from('profiles').update({ wechat_openid: openid }).eq('id', userId)
         } else {
-          return json(500, { error: 'email_exists but user not found' })
+          return json({ error: 'email_exists but user not found' }, 500)
         }
       } else {
-        return json(500, { error: 'create user failed', detail: msg })
+        return json({ error: 'create user failed', detail: msg }, 500)
       }
     } else {
       userId = created.user.id
@@ -141,7 +128,7 @@ Deno.serve(async (req) => {
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    return json(500, { error: 'create user failed', detail: msg })
+    return json({ error: 'create user failed', detail: msg }, 500)
   }
 
   // 4. 更新 profile 完整信息
@@ -160,7 +147,7 @@ Deno.serve(async (req) => {
 
   if (profileUpdateError) {
     console.error('[register-with-wechat] profile update error', profileUpdateError)
-    return json(500, { error: 'profile update failed' })
+    return json({ error: 'profile update failed' }, 500)
   }
 
   // 5. 同步 auth 邮箱（让用户也可以用邮箱登录）
@@ -172,36 +159,36 @@ Deno.serve(async (req) => {
     console.error('[register-with-wechat] auth email update error', authEmailError)
     const msg = authEmailError.message ?? ''
     if (msg.includes('email_exists') || msg.includes('already registered') || msg.includes('already in use')) {
-      return json(409, { error: 'email_already_registered' })
+      return json({ error: 'email_already_registered' }, 409)
     }
-    return json(500, { error: 'auth email update failed', detail: msg })
+    return json({ error: 'auth email update failed', detail: msg }, 500)
   }
 
   // 6. 轮换随机密码 → password grant 换 session
   const newPassword = crypto.randomUUID().replace(/-/g, '')
   const { error: pwdError } = await admin.auth.admin.updateUserById(userId, { password: newPassword })
   if (pwdError) {
-    return json(500, { error: 'update password failed' })
+    return json({ error: 'update password failed' }, 500)
   }
 
-  const tokenRes = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+  const tokenRes = await fetch(`${env.url}/auth/v1/token?grant_type=password`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      apikey: SERVICE_ROLE_KEY,
-      Authorization: `Bearer ${SERVICE_ROLE_KEY}`,
+      apikey: env.key,
+      Authorization: `Bearer ${env.key}`,
     },
     body: JSON.stringify({ email, password: newPassword }),
   })
   if (!tokenRes.ok) {
-    return json(502, { error: 'token exchange failed' })
+    return json({ error: 'token exchange failed' }, 502)
   }
   const token = (await tokenRes.json()) as { access_token?: string; refresh_token?: string }
   if (!token.access_token || !token.refresh_token) {
-    return json(502, { error: 'token exchange failed' })
+    return json({ error: 'token exchange failed' }, 502)
   }
 
-  return json(200, {
+  return json({
     access_token: token.access_token,
     refresh_token: token.refresh_token,
   })
