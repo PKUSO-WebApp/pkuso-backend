@@ -43,7 +43,7 @@ jobs:
       # `continue-on-error`：登录失败就退回匿名拉取（等于今天的行为），不因此挡住部署。
       - name: Login to GHCR
         continue-on-error: true
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
