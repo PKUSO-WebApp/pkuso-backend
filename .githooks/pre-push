@@ -1,0 +1,28 @@
+#!/bin/sh
+# 闸门的唯一定义在 `scripts/gate.sh` —— 这里只做「把它接到 git 上」，不复述任何命令。
+#
+# 安装（**每个克隆一次**，没法提交）：
+#     git config core.hooksPath .githooks
+#
+# ⚠️ 它**不是**可靠的门，两条原因都别忘：
+#   1. 没装就是没有 —— `core.hooksPath` 存在 `.git/config` 里，不进版本控制
+#   2. 可以 `git push --no-verify` 绕过
+# **真正的兜底是 CI 的必需检查**（规则集里的 `required_status_checks: verify`）：
+# 那个绕不过去，因为它决定 PR 能不能合。
+#
+# 只在推 `main` 时跑完整闸门：推 WIP 分支时挡人是**反效果**（想备份一下都做不到，
+# 而那种「钩子很烦」的印象会让人直接 `--no-verify`，把仅有的价值也搭进去）。
+# 归一到仓库根：git 保证从工作树根跑 hook，但**别的 harness 或手动调用不保证**，
+# 而下面那句是相对路径。
+# 取不到就原地继续（别把 push 卡死）——后面那句相对路径自然会报错，那是个更清楚的信号。
+root=$(git rev-parse --show-toplevel 2>/dev/null) && cd "$root"
+
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  case "$remote_ref" in
+    refs/heads/main)
+      echo "▶ 推 main ⇒ 跑闸门（scripts/gate.sh）…"
+      bash scripts/gate.sh || exit 1
+      ;;
+  esac
+done
+exit 0
