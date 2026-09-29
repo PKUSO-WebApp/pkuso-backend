@@ -141,24 +141,33 @@ jobs:
             git push
           fi
 
-      # Step 9: 同步类型到 pkuso-mp（与 sync-dev.yml 同款：clone → 覆盖 → 有差异才推）
+      # Step 9: 同步类型到 pkuso-mp 的 **main**（稳定线）
+      #
+      # ⚠️ 目标分支是 `main` 而不是 `dev`，这是 2026-09-29 定的规矩：**类型的来源必须
+      # 与那条线指向的环境一致**。mp 是两条线并行的仓库：
+      #   - `dev`（开发线）= 开发库 ⇒ 由 sync-dev.yml 写 **dev** 类型
+      #   - `main`（稳定线）= 已发布 = 生产库 ⇒ 由本步写 **prod** 类型
+      # 在这之前两个 workflow 都往 `dev` 写、commit message 还完全一样，等于同一个文件
+      # 有两个写入者、内容来自两个环境，事后无法分辨来源。
+      #
+      # 推 `main` 会被 mp 自己的 deploy-prod workflow 看到，但提交信息带 `[skip ci]`，
+      # GitHub 会原生跳过（mp 的版本号回写也靠同一条机制）。
       #
       # ⚠️ 本步原先用 peter-evans/create-pull-request 的 `repository` 入参开跨仓 PR，但该 action
       # **不支持这个入参**（只能在已 checkout 的仓库里开 PR），且仓库名 pkuso-miniprogram 已更名为
       # pkuso-mp ⇒ 两个原因叠加，该步长期**静默无效**（无文件匹配 → 不开 PR → 步骤照样 success）。
       # 详见 #51。此处改用 sync-dev.yml 里已验证过的直推写法。
-      - name: Sync types to miniprogram
+      - name: Sync types to miniprogram (main)
         env:
           GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
         run: |
           REPO="PKUSO-WebApp/pkuso-mp"
           CLONE_DIR=$(mktemp -d)
 
-          git clone --depth=1 https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git "$CLONE_DIR"
+          git clone --depth=1 --branch main https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git "$CLONE_DIR"
           cd "$CLONE_DIR"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout dev
 
           mkdir -p src/types
           # 本仓库类型在 types/（无 src/ 前缀），直接从这里取——sync-dev 那套 src/types 中转
@@ -172,30 +181,17 @@ jobs:
           fi
 
           git commit -m "chore: sync database types from pkuso-backend [skip ci]"
-          git push origin dev
-
-      # Step 10: 同步类型到 pkuso-web（同款直推，目标分支 main，与 sync-dev.yml 一致）
-      - name: Sync types to web
-        env:
-          GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
-        run: |
-          REPO="PKUSO-WebApp/pkuso-web"
-          CLONE_DIR=$(mktemp -d)
-
-          git clone --depth=1 https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git "$CLONE_DIR"
-          cd "$CLONE_DIR"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout main
-
-          mkdir -p src/types
-          cp "${{ github.workspace }}/types/database.types.ts" src/types/database.types.ts
-          git add src/types/database.types.ts
-
-          if git diff --cached --quiet; then
-            echo "No changes to commit in web"
-            exit 0
-          fi
-
-          git commit -m "chore: sync database types from pkuso-backend [skip ci]"
           git push origin main
+
+      # Step 10: **不往 pkuso-web 写类型**（2026-09-29 移除）。
+      #
+      # 这里原本也往 pkuso-web 的 `main` 写一份 **prod** 生成类型。但 web 没有 dev 分支
+      # ——它是单线、合并即部署，而 `main` 上装的必须是 **dev** 类型：否则「先写前端代码、
+      # 再用后端新列」会死锁（PR 的 tsc 会失败，手动补类型又会被 gen-types-check 拒掉）。
+      # 所以 web 的类型由 sync-dev.yml 独家写，`ci.yml` 的 gen-types-check 也比对 dev。
+      #
+      # 两边都写会造成：同一个文件被 prod 类型覆盖 → 下一次 CI 的 gen-types-check（比对 dev）
+      # 必然变红，且这个红毫无意义。实测 2026-09-27 run 36312148142 就是这一类。
+      #
+      # ⚠️ 要恢复本步，必须同时把 pkuso-web 的 gen-types-check 改成比对 prod，
+      # 并且接受上面那条死锁 —— 也就是说基本不该恢复。

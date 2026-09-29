@@ -113,6 +113,15 @@ jobs:
           git commit -m "chore: sync database types from pkuso-backend [skip ci]"
           git push origin dev
 
+      # 同步类型到 pkuso-web 的 `main`（**本步是 web 类型的唯一写入者**）
+      #
+      # web 没有 dev 分支 —— 单线、合并即部署。它的 `main` 上装 **dev** 类型，因为
+      # 「先写前端代码、再用后端新列」要求类型先到：装 prod 类型会死锁（PR 的 tsc 失败，
+      # 手动补类型又会被 gen-types-check 拒掉）。配套地，pkuso-web 的 `ci.yml`
+      # 里 gen-types-check 也比对 **dev schema**。
+      #
+      # ⚠️ deploy-prod.yml 里那步「Sync types to web」已于 2026-09-29 删除，别加回来：
+      # 它写 prod 类型，会把这里的 dev 类型覆盖掉，然后下一次 CI 必然假红。
       - name: Sync types to web
         env:
           GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
