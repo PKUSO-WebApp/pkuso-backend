@@ -1,0 +1,84 @@
+-- ============================================
+-- 安全：收回 anon 在 profiles / attendances 上的表级写权限
+-- ============================================
+--
+-- 起因（2026-09-29）：`profiles` 上唯一的策略是 `ALL`，它的 **USING** 是
+--
+--     (auth.uid() = id) OR is_admin() OR (status = 'approved' AND true)
+--
+-- PostgreSQL 里 `FOR ALL` **包含 DELETE**，而 **DELETE 只检查 USING**（不看 WITH CHECK）。
+-- 把 anon 的身份代进去：`auth.uid()` 为 NULL、`is_admin()` 为 false，
+-- 于是唯一的通路 `status = 'approved'` —— **对每一行 approved 都恒真**。
+--
+-- 表级 GRANT 又恰好是整表 `arwdDxtm`（下面有实查）。两者一叠加就是：
+--
+--     DELETE /rest/v1/profiles?status=eq.approved   ← 一条请求删光全部已批准成员
+--     DELETE /rest/v1/attendances                   ← USING 是字面 `(true OR is_admin())`
+--
+-- 凭据是**公开的 publishable key**（它就在 web/mp 的打包产物里，不需要登录）。
+--
+-- ── 实测证据（2026-09-29，dev 上走真 REST 接口；dev 与 prod 的授权层逐字同构）──
+--
+--   $ curl '.../rest/v1/profiles?select=*&limit=1' -H "apikey: <公开 anon key>"
+--     → HTTP 200，Content-Range: 0-0/5
+--       列含 session_token / wechat_openid / email / phone_number / college
+--
+--   $ curl -X DELETE '.../rest/v1/profiles?id=eq.<幽灵 uuid>' -H "apikey: <同上>"
+--     → **HTTP 204**   ← 授权通过。
+--       用幽灵 id 是为了**不删任何行**：无权限时 PostgREST 在匹配行之前就回 401/403，
+--       有权限才是 204。所以这是一条非破坏性、却能区分权限有无的探针。
+--
+--   $ 同一请求不带 apikey                            → HTTP 401 "No API key found in request"
+--     ← 对照：证明上面的 204 不是「什么都放行」的假象。
+--
+--   佐证（目录实查，prod）：
+--     · `has_table_privilege('anon','public.profiles','DELETE')` = true（PG 自己的 ACL 求值器）
+--     · `pg_class.relacl` = {postgres=arwdDxtm/postgres, anon=arwdDxtm/postgres,
+--                            authenticated=arwdDxtm/postgres, service_role=arwdDxtm/postgres}
+--       ⇒ 是**显式授给 anon** 的（不是经 PUBLIC），所以 `REVOKE ... FROM anon` 确实生效
+--     · `relrowsecurity` = true、`relforcerowsecurity` = false、RESTRICTIVE 策略数 = 0
+--       ⇒ 没有别的策略兜底
+--     · 把 JWT 缺失时的身份直接代入策略谓词：**5/5 行全过**
+--
+--   ⚠️ 上一份安全 migration（`20260928120000_guard_profile_privileged_columns.sql`）
+--      第 15 行**原文抄录过这个谓词**，但只审了 `with_check` 侧（提权），
+--      没看出 `qual` 侧的 DELETE 对 anon 是敞开的。改这类策略时两侧都要看。
+--
+-- ── 为什么是 REVOKE 而不是改策略 ──
+--
+--   洞**只在 anon**。改 USING 表达式要重写全表读写路径，风险面大得多。
+--   两个仓库全部 `.delete()` 调用点（web 12 处、mp 3 处）都在登录态；
+--   anon 阶段的真实调用只有三处，**全是 SELECT/INSERT**：
+--     · pkuso-mp 登录页 `.select('id').eq('email', …)`   （见 `pages/login/index.tsx`）
+--     · 游客模式读 `schedules`                            （见 `pages/schedule/index.tsx`）
+--     · 写 `client_error_logs`（策略本就允许 anon INSERT）
+--   所以只收 anon 的表级写权限：**不动策略、不碰 authenticated、不碰列** ——
+--   现有服务的读写路径一条都不受影响。
+--
+-- 回滚：
+--   GRANT DELETE, UPDATE, TRUNCATE, REFERENCES, TRIGGER, MAINTAIN
+--     ON public.profiles TO anon;
+--   GRANT DELETE, UPDATE, TRUNCATE, REFERENCES, TRIGGER, MAINTAIN
+--     ON public.attendances TO anon;
+--
+-- ⚠️ 这**不是**完整的收紧，本次只堵数据丢失这一条。仍未做（另开 PR）：
+--   · anon 仍可 SELECT profiles 的全部列（含 session_token / wechat_openid）。
+--     收紧要 `REVOKE SELECT ON profiles FROM anon` 后只补授 `(id, email)` ——
+--     因为 mp 登录页要 `WHERE email = …`，而**过滤同样需要列权限**。
+--   · anon 仍可 INSERT `schedules`（策略 `{public}` 且无 qual）。
+--   · anon 对其余 19 张表仍持有整表 arwdDxtm。多数被 RLS 挡着，但没有纵深 ——
+--     这条策略的历史（`AND true` 是残迹）说明「靠策略兜底」并不牢靠。
+
+BEGIN;
+
+-- DELETE：本次的实际洞。
+-- UPDATE：目前**不可利用**（该策略的 WITH CHECK 是 `auth.uid() = id OR is_admin()`，
+--         anon 两项皆假 ⇒ 必然被拒），但表级权限不该留着 ——
+--         策略将来一放松，它就会静默变成可写。
+-- TRUNCATE：RLS **完全不拦** TRUNCATE，只是 PostgREST 不暴露这个动作所以够不着；
+--         它不属于「有 RLS 兜底」之列。
+-- REFERENCES / TRIGGER / MAINTAIN：与读写无关的 DDL 类权限，anon 一律不需要。
+REVOKE DELETE, UPDATE, TRUNCATE, REFERENCES, TRIGGER, MAINTAIN ON public.profiles FROM anon;
+REVOKE DELETE, UPDATE, TRUNCATE, REFERENCES, TRIGGER, MAINTAIN ON public.attendances FROM anon;
+
+COMMIT;
