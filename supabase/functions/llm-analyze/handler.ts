@@ -457,7 +457,12 @@ export async function handler(req: Request): Promise<Response> {
       // （pkuso-web upload-modal.tsx）。嵌一层 analysis 会让它读到 undefined，
       // 而 String(undefined) 是个真值 —— 会建出一个名叫「undefined」的声部。
       // 加列式 migration 换来的顺序无关性，就靠这个平铺的响应兑现。
-      return json({ success: true, source: 'llm', ...analysis });
+      //
+      // ⚠️ **第三个参数不能省**：调用方是浏览器里的 pkuso-web（`analysis.ts` 的
+      // `functions.invoke`）。CORS 校验作用于**实际响应**、不只是预检 —— 漏掉它就会
+      // 「预检过、POST 发出去、DeepSeek 额度烧掉，然后浏览器把响应挡住」，
+      // 前端只看到一句「LLM 请求失败」。本文件其余出口都带着它。
+      return json({ success: true, source: 'llm', ...analysis }, 200, CORS_HEADERS);
     }
 
     // 所有重试均失败

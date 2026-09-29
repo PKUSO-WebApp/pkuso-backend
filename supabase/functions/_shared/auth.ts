@@ -25,7 +25,7 @@
  *
  * ```ts
  * import { requireUser } from "../_shared/auth.ts";
- * import { CORS_HEADERS, json } from "../_shared/http.ts";
+ * import { CORS_HEADERS } from "../_shared/http.ts";
  *
  * export async function handler(req: Request): Promise<Response> {
  *   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS_HEADERS });

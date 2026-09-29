@@ -1,4 +1,9 @@
 import { handler, retry } from "./handler.ts";
+import {
+  assertResponseHeaders,
+  CORS_JSON_HEADERS,
+  CORS_PREFLIGHT_HEADERS,
+} from "../_shared/http.fixtures.ts";
 
 // 把退避压到 1ms：真等 1s/2s/4s 会让整套用例跑 40 秒以上，没人愿意跑就等于没有保护。
 // ⚠️ 光调小基数**不够**（2026-09-25）：退避要**被观测到**才能断言，而过去是靠桩里记
@@ -308,4 +313,68 @@ Deno.test("没有 Authorization 头 → 401（网关不验签，函数必须自�
     new Request("http://localhost/", { method: "POST", body: JSON.stringify({ pages: [] }) }),
   );
   eq(res.status, 401, "缺 Authorization 必须 401");
+});
+
+/**
+ * 响应头（**表驱动**）：每个响应点实际带哪几个头。
+ *
+ * 同 llm-analyze：那里成功路径少写一个参数、响应少了全部 CORS 头，而套件全绿 ——
+ * 因为当时的断言全在比状态码与报文，改动落在的维度恰好是**响应头**。
+ * 期望值见 `../_shared/http.fixtures.ts`（手写，不从实现 derive）。
+ */
+Deno.test("响应头：每个响应点带哪些头（表驱动 —— 少一个 CORS 头这里就红）", async () => {
+  const rows: Array<{ name: string; expected: Record<string, string>; run: () => Promise<Response> }> = [
+    {
+      name: '成功路径（浏览器要读的就是这个响应）',
+      expected: CORS_JSON_HEADERS,
+      run: () => {
+        reset(() => new Response(OK_BODY, { status: 200 }));
+        return post({ pages: PAGES, pageCount: 4 });
+      },
+    },
+    {
+      name: '400 契约违规（pages 为空）',
+      expected: CORS_JSON_HEADERS,
+      run: () => post({ pages: [], pageCount: 4 }),
+    },
+    {
+      name: '400 报文畸形',
+      expected: CORS_JSON_HEADERS,
+      run: () => post('not json'),
+    },
+    {
+      name: '401 缺 Authorization（失败响应也由本函数带 CORS 头）',
+      expected: CORS_JSON_HEADERS,
+      run: () =>
+        handler(
+          new Request('http://localhost/', {
+            method: 'POST',
+            body: JSON.stringify({ pages: PAGES, pageCount: 4 }),
+          }),
+        ),
+    },
+    {
+      name: '500 缺 DEEPSEEK_API_KEY',
+      expected: CORS_JSON_HEADERS,
+      run: async () => {
+        const saved = Deno.env.get('DEEPSEEK_API_KEY');
+        Deno.env.delete('DEEPSEEK_API_KEY');
+        try {
+          return await post({ pages: PAGES, pageCount: 4 });
+        } finally {
+          if (saved) Deno.env.set('DEEPSEEK_API_KEY', saved);
+        }
+      },
+    },
+    {
+      name: '204 预检（只有 CORS 两个头，没有 content-type）',
+      expected: CORS_PREFLIGHT_HEADERS,
+      run: () => handler(new Request('http://localhost/', { method: 'OPTIONS' })),
+    },
+  ];
+
+  for (const row of rows) {
+    assertResponseHeaders(await row.run(), row.expected, row.name);
+  }
+  eq(rows.length >= 6, true, '响应点表被改小了？少一个入口就少一份保护');
 });
