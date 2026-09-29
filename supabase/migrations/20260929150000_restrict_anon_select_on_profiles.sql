@@ -1,0 +1,89 @@
+-- ============================================
+-- 安全：把 anon 对 profiles 的读取收窄到 (id, email, status)
+-- ============================================
+--
+-- 接 `20260929140000_revoke_anon_write_on_profiles_attendances.sql`（那条收的是**写**）。
+-- 本次收**读**。两条合起来才堵住 2026-09-29 那次排查。
+--
+-- ── 洞 ──
+--
+-- `anon` 持有 `profiles` 的整表 SELECT（`relacl` 里是 `anon=arwdDxtm/postgres`，
+-- 显式授予，不是经 PUBLIC）。而 `profiles` 那条 `FOR ALL` 策略的 USING 含
+-- `status = 'approved'`，对 anon 恒真 ⇒ **anon 能读全部已批准成员的全部列**：
+--
+--     session_token · wechat_openid · email · phone_number · college · full_name · …
+--
+-- 实测（2026-09-29，dev，公开 anon key 走真 REST）：
+--
+--     $ curl '.../rest/v1/profiles?select=*&limit=1' -H "apikey: <公开 anon key>"
+--       → HTTP 200，Content-Range: 0-0/5
+--         返回列含 session_token / wechat_openid / email / phone_number / college
+--
+-- 这不是「账号可被接管」：`session_token` 只被 `get_my_session` / `touch_session` 消费，
+-- 两者都以 `auth.uid()` 限定（读过 prosrc）⇒ 拿到别人的 token 也换不到会话。
+-- 它是**隐私外泄**：全团通讯录 + 微信 openid。措辞别升级。
+--
+-- ── 为什么只授 (id, email, status) ──
+--
+-- **web 与 mp 在 anon 阶段读 profiles 的路径我逐条枚举过，只有一条**：
+--
+--   pkuso-mp/src/pages/login/index.tsx:102-106
+--       supabase.from('profiles').select('id').eq('email', …).maybeSingle()
+--
+--   它在 `signInWithPassword` **之前**跑，所以那一刻确实是 anon。
+--   注意 `WHERE email = …` **同样需要 email 的列权限**（过滤也是引用），所以 email 必须授。
+--
+-- 其余全部 profiles 读取都在登录态，不受影响：
+--   · web 的 `.select('role')`（`app/(auth)/login/page.tsx:43`、`lib/verify-admin.ts:28`、
+--     所有 `/api/admin/*`）都在 `auth.getUser()` 之后
+--   · 嵌入式 `profiles(full_name, instrument)` 全在 posts / attendances / leave / feedback
+--     这些**需要 authenticated** 的查询上（已 grep 全仓确认，anon 够不着）
+--   · `profiles_roster` 视图是 **SECURITY DEFINER**（Supabase advisor 明示），
+--     以属主身份运行，不依赖 anon 的列权限 ⇒ 不受本次影响
+--   · `is_admin()` / `get_my_session()` / `touch_session()` 都是 DEFINER，同理
+--
+-- ── 为什么连 `status` 一起授（它看着像不该给的）──
+--
+-- 因为**策略的 USING 表达式引用了它**。而「RLS 策略引用的列要不要查询者持有列权限」
+-- 这条语义我不敢凭记忆下结论 —— 万一要，不授 status 就会让上面的登录查询直接 42501，
+-- 也就是**打断小程序登录**。
+--
+-- 而授它在**信息上是零代价**的：anon 能看见的每一行，其 status 必然是 `'approved'`
+-- （策略的判据就是它；anon 的 `auth.uid()` 为 NULL、`is_admin()` 为 false，
+-- 另两支对 anon 恒假）。给常量授权 = 不泄漏任何东西。
+--
+-- 宁可多授一列常量，也不赌一条我没实测的语义 —— 这条取舍是本次改动的核心决定。
+--
+-- 回滚：
+--   REVOKE SELECT (id, email, status) ON public.profiles FROM anon;
+--   GRANT SELECT ON public.profiles TO anon;
+--
+-- ── 验收（这是唯一能证明它生效的方式）──
+--
+--   A. 收窄生效：
+--        curl '.../rest/v1/profiles?select=email&limit=1' -H "apikey: <anon key>"
+--        期望 **不再是 200**（应为 401/403，报 permission denied for column）
+--
+--   B. 登录路径没被打断（**这条比 A 更重要**）：
+--        curl '.../rest/v1/profiles?select=id&email=eq.<某个已批准成员的邮箱>' \
+--             -H "apikey: <anon key>"
+--        期望 **仍是 200 且有行**。这一步失败 = 小程序登录页会报「该邮箱未注册」。
+--
+--   ⚠️ `deploy-prod.yml` 的 `db push` 带 `|| true`，migration 失败 workflow 照样绿。
+--      必须跑上面两条，别只看绿勾。
+--
+-- ── 仍未做（另开 PR）──
+--   · anon 仍可 SELECT `attendances` 全部行（其策略 USING 是字面 `true`）。
+--     dev/prod 上都没有 anon 读它的代码路径，但权限还在。
+--   · anon 仍可 INSERT `schedules`（策略 `{public}` 且无 qual）。
+--   · 其余 18 张表 anon 仍持整表 `arwdDxtm`。
+
+BEGIN;
+
+-- 先整表收回，再按列补授。两步都不改策略 —— 行可见性仍由那条 FOR ALL 策略决定，
+-- 本次只动「哪些列可读」。所以能看见的行集合**一个都没变**（仍是 approved），
+-- 变的只是行上能取到几个字段。
+REVOKE SELECT ON public.profiles FROM anon;
+GRANT SELECT (id, email, status) ON public.profiles TO anon;
+
+COMMIT;
