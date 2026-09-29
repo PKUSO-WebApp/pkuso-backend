@@ -35,15 +35,35 @@ const OK_BODY = JSON.stringify({
 let sent: FormData | null = null;
 let upstream: () => Response = () => new Response(OK_BODY, { status: 200 });
 
+// handler 现在**自己验签**（见 ../_shared/auth.ts）—— 网关不验签（CI 用 `--no-verify-jwt`
+// 部署，config.toml 的 verify_jwt 是死配置），所以它必须自己去 auth 服务校验 token。
+// 这里把那一次校验应答掉；「token 无效必须 401」由 _shared/auth.test.ts 单独覆盖。
+const TEST_TOKEN = "test-token";
+Deno.env.set("SUPABASE_URL", "https://test.supabase.co");
+Deno.env.set("SUPABASE_SERVICE_ROLE_KEY", "test-service-role-key");
+
 globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
   const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+  if (url.includes("/auth/v1/user")) {
+    return Promise.resolve(
+      new Response(JSON.stringify({ id: "test-user", email: "test@example.com" }), {
+        status: 200,
+      }),
+    );
+  }
   if (!url.includes("api.ocr.space")) throw new Error(`意外请求: ${url}`);
   sent = init?.body as FormData;
   return Promise.resolve(upstream());
 }) as typeof fetch;
 
 const call = (body: unknown) =>
-  handler(new Request("http://x/", { method: "POST", body: JSON.stringify(body) }));
+  handler(
+    new Request("http://x/", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${TEST_TOKEN}` },
+      body: JSON.stringify(body),
+    }),
+  );
 
 const B64 = "AAAA";
 
@@ -124,8 +144,13 @@ Deno.test("缺 file_base64 → 400，且**不打上游**", async () => {
 });
 
 Deno.test("请求体不是合法 JSON → 400 而不是抛异常", async () => {
+  // 带 token：鉴权现在是**前置条件**，不带的话会先 401、测不到 JSON 解析这条
   const res = await handler(
-    new Request("http://x/", { method: "POST", body: "{ 这不是 JSON" }),
+    new Request("http://x/", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${TEST_TOKEN}` },
+      body: "{ 这不是 JSON",
+    }),
   );
   assertEquals(res.status, 400);
   assertEquals((await res.json()).success, false);
@@ -191,4 +216,14 @@ Deno.test("mime 类型决定 filetype：图片走 JPG，其余走 PDF", async ()
   assertEquals(sent?.get("filetype"), "PDF");
   await call({ file_base64: B64 });
   assertEquals(sent?.get("filetype"), "JPG", "默认 image/png → JPG");
+});
+
+Deno.test("没有 Authorization 头 → 401（网关不验签，函数必须自己验）", async () => {
+  // 回归守卫：2026-09-29 之前本函数体内**一行鉴权都没有**，而 CI 用 --no-verify-jwt
+  // 部署（config.toml 的 verify_jwt 是死配置）⇒ 拿着公开 publishable key 的任何人
+  // 都能调它烧 OCR.space 的额度。这条测试就是钉住那次修复。
+  const res = await handler(
+    new Request("http://x/", { method: "POST", body: JSON.stringify({ file_base64: "AAAA" }) }),
+  );
+  assertEquals(res.status, 401);
 });

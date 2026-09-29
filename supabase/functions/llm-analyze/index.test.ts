@@ -55,8 +55,21 @@ let lastPrompt = "";
 let respond: (call: number) => Response | Promise<Response> = () =>
   new Response(OK_BODY, { status: 200 });
 
+// handler 现在**自己验签**（见 ../_shared/auth.ts）—— 网关不验签（CI 用 `--no-verify-jwt`
+// 部署），所以它必须自己去 auth 服务校验 token。这里把那一次校验应答掉。
+const TEST_TOKEN = "test-token";
+Deno.env.set("SUPABASE_URL", "https://test.supabase.co");
+Deno.env.set("SUPABASE_SERVICE_ROLE_KEY", "test-service-role-key");
+
 globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
   const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+  if (url.includes("/auth/v1/user")) {
+    return Promise.resolve(
+      new Response(JSON.stringify({ id: "test-user", email: "test@example.com" }), {
+        status: 200,
+      }),
+    );
+  }
   // 只有打上游的那次走桩；其余交给真 fetch（本文件里没有别的出网调用）
   if (!url.includes("api.deepseek.com")) {
     throw new Error(`意外请求: ${url}`);
@@ -89,6 +102,7 @@ const post = (body: unknown) =>
   handler(
     new Request("http://localhost/", {
       method: "POST",
+      headers: { Authorization: `Bearer ${TEST_TOKEN}` },
       body: typeof body === "string" ? body : JSON.stringify(body),
     }),
   );
@@ -612,4 +626,13 @@ Deno.test("不过度处理：一两个连续引号原样留着（#46）", async 
   reset(() => new Response(OK_BODY, { status: 200 }));
   await post({ ocr_text: 'a "" b " c', file_name: "x.pdf" });
   eq(lastPrompt.includes('a "" b " c'), true, "1–2 个连续引号不动它");
+});
+
+Deno.test("没有 Authorization 头 → 401（网关不验签，函数必须自己验）", async () => {
+  // 回归守卫：同 ocr-analyze —— 2026-09-29 之前本函数体内一行鉴权都没有，
+  // 拿着公开 publishable key 的任何人可以直接烧 DeepSeek 的额度。
+  const res = await handler(
+    new Request("http://localhost/", { method: "POST", body: JSON.stringify({ ocr_text: "x" }) }),
+  );
+  eq(res.status, 401, "缺 Authorization 必须 401");
 });
