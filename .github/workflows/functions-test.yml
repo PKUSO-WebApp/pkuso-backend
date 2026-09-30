@@ -1,9 +1,14 @@
 name: Functions Test
 
 # 为什么需要这个文件：**后端的函数测试此前根本不在 CI 里跑**。
-# sync-dev.yml 只做 db push → 部署函数 → 同步类型，deploy-prod.yml 是同一条路，
-# audit-check.yml 只查 audit/ 目录。于是 supabase/functions/ 下的回归保护
-# 全靠「有人记得在本地跑 deno test」—— 而那正是最容易不发生的事。
+# sync-dev.yml 只做 db push → 部署函数 → 同步类型，deploy-prod.yml 是同一条路。
+# 于是 supabase/functions/ 下的回归保护全靠「有人记得在本地跑 deno test」——
+# 而那正是最容易不发生的事。
+#
+# （此前这里还写着「audit-check.yml 只查 audit/ 目录」。那个 workflow 2026-09-30 已删：
+# 它的唯一 `exit 1` 要求 `audit/` 下没有任何 md 文件，而那个目录恒有两个历史文件 ⇒
+# **结构性不可能失败**，却以「Audit Check」的名字在 PR 上显示绿勾。取而代之的是
+# `scripts/check-migrations.mjs`（migration 结构检查，进了闸门，见 gate.sh）。）
 #
 # `deno test --allow-env --allow-read supabase/functions/` 全绿；**测试自身不发起网络调用、
 # 不需要任何密钥**（它们桩掉了 fetch；不过首跑仍要从 deno.land 取 std 断言库）。
@@ -35,7 +40,12 @@ jobs:
   deno-test:
     runs-on: ubuntu-latest
     steps:
+      # ⚠️ `fetch-depth: 0` 是给闸门里的 migration 结构检查用的：它要拿 `origin/main` 当
+      # base 去算「本次新增/改动了哪些 migration」。默认的浅克隆里没有 `origin/main`，
+      # 检查会**降级跳过**（打印提示、不当成通过）—— 那等于 CI 上白装了一条检查。
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: denoland/setup-deno@v2
         with:
