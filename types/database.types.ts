@@ -1063,6 +1063,14 @@ export type Database = {
         Returns: boolean
       }
       cleanup_client_error_logs: { Args: never; Returns: number }
+      ensure_attendance_roster: {
+        Args: { p_rehearsal_ids?: number[] }
+        Returns: number
+      }
+      fill_attendance_roster: {
+        Args: { p_rehearsal_ids?: number[] }
+        Returns: number
+      }
       get_my_profile_entry: {
         Args: never
         Returns: {
@@ -1080,6 +1088,10 @@ export type Database = {
       }
       is_admin: { Args: never; Returns: boolean }
       log_client_errors: { Args: { rows: Json }; Returns: undefined }
+      rehearsal_is_upcoming: {
+        Args: { p_end: string; p_start: string }
+        Returns: boolean
+      }
       sign_in_attendance_location: {
         Args: {
           p_accuracy?: number
