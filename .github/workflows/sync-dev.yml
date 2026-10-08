@@ -18,6 +18,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # 不把 GITHUB_TOKEN 的凭据留在 .git/config 里：它推不进 main，
+          # 留着反而会和下面用的 PAT 抢（见「Commit updated types」的说明）。
+          persist-credentials: false
 
       - uses: supabase/setup-cli@v3
         with:
@@ -76,7 +80,25 @@ jobs:
       - name: Prepare types for frontend repos
         run: mkdir -p src/types && cp types/database.types.ts src/types/database.types.ts
 
+      # ⚠️ 推回本仓 main 用的是 CROSS_REPO_TOKEN（PAT），**不是**默认的 GITHUB_TOKEN。
+      #
+      # main 的 ruleset 要求「必须走 PR + 过 deno-test」，其 bypass 名单只有
+      # OrganizationAdmin 和一个 RepositoryRole，**没有 GitHub Actions** —— 而用
+      # GITHUB_TOKEN 推 main 的身份正是它，于是被 `GH013 … Changes must be made through
+      # a pull request` 拒掉。这条路的代价是**安静**的：只有真有类型差异的运行才红，
+      # 没差异的运行照常绿，所以从 2026-09-28 断到 2026-10-07 才被发现
+      # （backend main / mp dev / web main 的类型都停在那一天）。
+      #
+      # 「把 GitHub Actions 加进 bypass」已试过、行不通：GitHub 服务端返回
+      # `422 Actor GitHub Actions integration must be part of the ruleset source
+      # or owner organization`（org 上没装它，它不作为"安装"存在）。
+      #
+      # 改用 PAT 的依据：跨仓推 mp / web 用的就是这个 token，而 web 的 main 有同类
+      # 规则、9 月那些类型提交照样进去了。**前提**：该 PAT 对本仓库有写权限，且其
+      # 所有者在上面的 bypass 名单里（admin 或对应角色）。
       - name: Commit updated types
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -85,7 +107,7 @@ jobs:
             echo "No type changes to commit"
           else
             git commit -m "chore: update types from dev [skip ci]"
-            git push
+            git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${GITHUB_REF_NAME}"
           fi
 
       - name: Sync types to miniprogram
