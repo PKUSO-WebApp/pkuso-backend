@@ -42,3 +42,8 @@ verify_jwt = true
 
 [functions.segment-parts]
 verify_jwt = true
+
+[functions.compose-annotated-pdf]
+# ⚠️ 死配置：CI 用 `--no-verify-jwt` 部署（见 AGENTS.md 的「本地闸门」一节），
+# 线上这个值不生效。本函数的鉴权由 handler.ts 里的 `requireUser()` 自己做。
+verify_jwt = true
