@@ -759,6 +759,38 @@ export type Database = {
         }
         Relationships: []
       }
+      sheet_music_annotations: {
+        Row: {
+          file_id: string
+          page: number
+          strokes: Json
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          file_id: string
+          page: number
+          strokes?: Json
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          file_id?: string
+          page?: number
+          strokes?: Json
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "sheet_music_annotations_file_id_fkey"
+            columns: ["file_id"]
+            isOneToOne: false
+            referencedRelation: "sheet_music_files"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       sheet_music_distributions: {
         Row: {
           distributed_at: string | null
