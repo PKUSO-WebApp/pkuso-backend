@@ -759,6 +759,41 @@ export type Database = {
         }
         Relationships: []
       }
+      sheet_music_annotation_history: {
+        Row: {
+          file_id: string
+          page: number
+          replaced_at: string
+          strokes: Json
+          user_id: string
+          version: string
+        }
+        Insert: {
+          file_id: string
+          page: number
+          replaced_at?: string
+          strokes: Json
+          user_id: string
+          version?: string
+        }
+        Update: {
+          file_id?: string
+          page?: number
+          replaced_at?: string
+          strokes?: Json
+          user_id?: string
+          version?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "sheet_music_annotation_history_file_id_fkey"
+            columns: ["file_id"]
+            isOneToOne: false
+            referencedRelation: "sheet_music_files"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       sheet_music_annotations: {
         Row: {
           file_id: string
@@ -766,6 +801,7 @@ export type Database = {
           strokes: Json
           updated_at: string
           user_id: string
+          version: string | null
         }
         Insert: {
           file_id: string
@@ -773,6 +809,7 @@ export type Database = {
           strokes?: Json
           updated_at?: string
           user_id: string
+          version?: string | null
         }
         Update: {
           file_id?: string
@@ -780,6 +817,7 @@ export type Database = {
           strokes?: Json
           updated_at?: string
           user_id?: string
+          version?: string | null
         }
         Relationships: [
           {
@@ -1116,6 +1154,10 @@ export type Database = {
       }
     }
     Functions: {
+      archive_sheet_music_annotation: {
+        Args: { p_file_id: string; p_page: number; p_strokes: Json }
+        Returns: undefined
+      }
       cancel_leave_on_sign_in: {
         Args: { p_rehearsal_id: number }
         Returns: {
@@ -1180,6 +1222,19 @@ export type Database = {
         }[]
       }
       log_client_errors: { Args: { rows: Json }; Returns: undefined }
+      push_sheet_music_annotation: {
+        Args: {
+          p_expected_version?: string
+          p_file_id: string
+          p_page: number
+          p_strokes: Json
+        }
+        Returns: {
+          ok: boolean
+          strokes: Json
+          version: string
+        }[]
+      }
       rehearsal_is_upcoming: {
         Args: { p_end: string; p_start: string }
         Returns: boolean
@@ -1220,6 +1275,15 @@ export type Database = {
           token: string
           trusted: boolean
         }[]
+      }
+      trim_sheet_music_annotation_history: {
+        Args: {
+          p_file_id: string
+          p_keep?: number
+          p_page: number
+          p_user_id: string
+        }
+        Returns: undefined
       }
     }
     Enums: {
