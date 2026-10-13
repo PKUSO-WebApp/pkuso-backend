@@ -10,7 +10,7 @@ export type Database = {
   // Allows to automatically instantiate createClient with right options
   // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
   __InternalSupabase: {
-    PostgrestVersion: "14.5"
+    PostgrestVersion: "14.17"
   }
   public: {
     Tables: {
@@ -983,6 +983,39 @@ export type Database = {
           },
         ]
       }
+      user_devices: {
+        Row: {
+          created_at: string
+          device_id: string
+          last_seen_at: string
+          name: string
+          platform: string | null
+          token: string
+          trusted: boolean
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          device_id: string
+          last_seen_at?: string
+          name?: string
+          platform?: string | null
+          token?: string
+          trusted?: boolean
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          device_id?: string
+          last_seen_at?: string
+          name?: string
+          platform?: string | null
+          token?: string
+          trusted?: boolean
+          user_id?: string
+        }
+        Relationships: []
+      }
       verification_codes: {
         Row: {
           code: string
@@ -1118,11 +1151,38 @@ export type Database = {
           session_token: string
         }[]
       }
+      get_my_session_v2: {
+        Args: { p_device_id: string }
+        Returns: {
+          last_seen_at: string
+          token: string
+          trusted: boolean
+        }[]
+      }
       is_admin: { Args: never; Returns: boolean }
+      list_my_devices: {
+        Args: never
+        Returns: {
+          created_at: string
+          device_id: string
+          last_seen_at: string
+          name: string
+          platform: string
+          trusted: boolean
+        }[]
+      }
       log_client_errors: { Args: { rows: Json }; Returns: undefined }
       rehearsal_is_upcoming: {
         Args: { p_end: string; p_start: string }
         Returns: boolean
+      }
+      set_device_trust: {
+        Args: {
+          p_device_id: string
+          p_self_device_id: string
+          p_trusted: boolean
+        }
+        Returns: undefined
       }
       sign_in_attendance_location: {
         Args: {
@@ -1144,6 +1204,13 @@ export type Database = {
         Returns: {
           session_started_at: string
           session_token: string
+        }[]
+      }
+      touch_session_v2: {
+        Args: { p_device_id: string; p_name?: string; p_platform?: string }
+        Returns: {
+          token: string
+          trusted: boolean
         }[]
       }
     }
