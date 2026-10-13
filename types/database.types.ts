@@ -986,6 +986,7 @@ export type Database = {
       user_devices: {
         Row: {
           created_at: string
+          deleted_at: string | null
           device_id: string
           last_seen_at: string
           name: string
@@ -996,6 +997,7 @@ export type Database = {
         }
         Insert: {
           created_at?: string
+          deleted_at?: string | null
           device_id: string
           last_seen_at?: string
           name?: string
@@ -1006,6 +1008,7 @@ export type Database = {
         }
         Update: {
           created_at?: string
+          deleted_at?: string | null
           device_id?: string
           last_seen_at?: string
           name?: string
@@ -1128,6 +1131,10 @@ export type Database = {
         Returns: boolean
       }
       cleanup_client_error_logs: { Args: never; Returns: number }
+      delete_device: {
+        Args: { p_device_id: string; p_self_device_id: string }
+        Returns: undefined
+      }
       ensure_attendance_roster: {
         Args: { p_rehearsal_ids?: number[] }
         Returns: number
@@ -1154,6 +1161,7 @@ export type Database = {
       get_my_session_v2: {
         Args: { p_device_id: string }
         Returns: {
+          deleted_at: string
           last_seen_at: string
           token: string
           trusted: boolean
