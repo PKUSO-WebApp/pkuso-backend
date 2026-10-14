@@ -102,6 +102,24 @@ git config core.hooksPath .githooks     # 每个克隆一次，没法提交
 状态。**现在绿勾对 db push 是有意义的**；仍在的那一处 `|| true` 只在 `migration repair` 上，
 它是「把一个 prod 独有的版本标成已回滚，本来就可能无事可做」，理由写在那句旁边的注释里。
 
+### 不合并也能部署到 dev（`workflow_dispatch`）
+
+`sync-dev.yml` 挂了 `workflow_dispatch`，可以把**任意分支**的 migration / 函数先部署到 dev、不等合并：
+
+```bash
+gh workflow run sync-dev.yml --ref <分支>
+```
+
+两条不明显的语义：
+
+- `db push` 只应用**所 checkout 的分支里**尚未应用的版本 ⇒「先用它部署 dev、之后再把分支合并到 `main`」不会冲突——合并后那一步是空操作。
+- 类型照常生成、回写**触发时所在的分支**（`GITHUB_REF_NAME`），并照常推给 `pkuso-mp` 的 `dev` 与 `pkuso-web` 的 `main`。
+
+用途：前端要对着新 schema 开发或验收，而后端 PR 还没合时。
+**交付终点 = PR + 用上面这条命令把分支部署到 dev**；合 `main` 由人决定，不用等合并才算交付。
+
+⚠️ **前端依赖新 schema 时的顺序**：dev 与 prod 的 schema 长期不一致（合并只推进 dev，prod 手动触发）。**前端的改动若要依赖新 schema，必须先跑完 `Deploy to Prod`、再合前端 PR**——前端仓库是合并即部署，反过来做会让线上对着旧 schema 报错。
+
 ## 新增后端变更流程
 
 1. 在 `supabase/migrations/` 创建新的 migration 文件
