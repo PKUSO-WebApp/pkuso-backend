@@ -175,8 +175,15 @@ jobs:
           git commit -m "chore: sync database types from pkuso-backend [skip ci]"
           git push origin main
 
-      - name: Report deployment status
+      # ⚠️ 这一 step 的存在意义就是**让失败可见**（2026-10-14 从 ::warning:: 改成 exit 1）。
+      # 在此之前：函数部署失败了，而整个 run 是绿的——类型照生成、照同步，没人会注意到
+      # dev 上跑的还是旧代码。与 db push 的 `|| true`（2026-09-30 去掉）是同一类问题，
+      # 判据也一样：**失败的可见性优先于流程的连续性**。
+      # 两件有意保留的事：循环里「一个函数失败继续部署其余函数」（best-effort，不浪费
+      # 已完成的部署）；类型的生成与同步照跑（类型来自 schema，与函数无关）。
+      - name: Fail if any edge function failed to deploy
         if: steps.deploy-functions.outputs.deployed_failed != ''
         run: |
-          echo "::warning::Some edge functions failed to deploy:${{ steps.deploy-functions.outputs.deployed_failed }}"
+          echo "::error::Some edge functions failed to deploy:${{ steps.deploy-functions.outputs.deployed_failed }}"
           echo "Check the logs above for details."
+          exit 1

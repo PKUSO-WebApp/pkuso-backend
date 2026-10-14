@@ -13,8 +13,20 @@ permissions:
 jobs:
   deploy-prod:
     runs-on: ubuntu-latest
-    if: github.event.inputs.confirm == 'deploy'
     steps:
+      # ⚠️ 确认词校验必须是**失败**，不能是 job 级的 `if`（2026-10-14 改）。
+      # 原来 `if: github.event.inputs.confirm == 'deploy'` 放在 job 上：输错一个字母，
+      # job 整个 skipped，而 workflow 计为**成功**——「想部署但什么都没部署」看起来是绿的。
+      # 值经 env 传入而不是直接插进脚本（${{ }} 直插 run 是命令注入点）。
+      - name: Verify confirmation
+        env:
+          CONFIRM: ${{ github.event.inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "deploy" ]; then
+            echo "::error::Confirmation word mismatch — expected 'deploy'. Nothing was deployed."
+            exit 1
+          fi
+
       - uses: actions/checkout@v7
         with:
           # 同 sync-dev.yml：不留 GITHUB_TOKEN 的凭据（它推不进 main）
