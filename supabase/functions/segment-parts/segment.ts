@@ -91,13 +91,72 @@ export interface SegmentPlan {
 }
 
 /**
+ * 一个切点被丢掉的**理由**。取值是**契约的一部分**（前端按它分类，见 pkuso-web 的
+ * `requestSegmentation`）—— 只能加新值，不能改已有值的含义。
+ *
+ * 为什么要有它：「模型弃权」与「模型给了切点但被丢掉」在响应里曾经**长得一模一样**
+ * （都是空 cuts），而这两种情况的修法完全相反（前者要改 prompt，后者要改校验/抄写规则）。
+ * 实测那几份 0/9 的合订谱就卡在这里 —— 没人知道模型到底说了什么。
+ */
+export const REJECTION_REASONS = [
+  /** 页号不是安全整数（不是数字 / NaN / Infinity / 小数） */
+  "not-integer",
+  /** 页号不在 1..pageCount 内 */
+  "out-of-range",
+  /** 第 1 页 —— 它是第 1 段的**定义**，不是边界 */
+  "page-one",
+  /** 同一个页号在前面已经出现过 */
+  "duplicate",
+  /** 这个位置没有字符串证据（缺失 / 类型不对） */
+  "no-evidence",
+  /** 那一页没有窄带文本（OCR 失败或前端没交上来）—— 无从校验，宁可丢 */
+  "no-page-text",
+  /** 引文没在**那一页**的原文里找到（幻觉证据，或抄错了页） */
+  "evidence-unsupported",
+  /** 通过校验的切点数超过 MAX_CUTS：整个计划退回「不切」 */
+  "too-many-cuts",
+] as const;
+
+export type RejectionReason = (typeof REJECTION_REASONS)[number];
+
+/** 被丢掉的一个切点。 */
+export interface RejectedCut {
+  /**
+   * 模型给的那个页号，**原样带上**（`4.5` 这种也在：它正是「为什么被丢」的一部分）。
+   * 它压根不是有限数字时是 `null` —— 原始值在 `rawCuts` 里。
+   */
+  page: number | null;
+  reason: RejectionReason;
+  /** 只在理由与引文有关（`evidence-unsupported`）时带上模型抄的那段 —— 缺了它就还是「不知道它说了什么」 */
+  evidence?: string;
+}
+
+/**
+ * `parseSegmentPlan` 的产物：可执行的计划 + **模型原样说了什么**。
+ *
+ * `rejected` / `rawCuts` 是给排查用的（API 层要能区分「模型弃权」与「模型给了切点但被丢掉」）。
+ * 它们**不参与**下游切片：切分永远只看 `cuts`。
+ */
+export interface SegmentPlanParse extends SegmentPlan {
+  /** 模型原样给出的 `cuts`（**未校验**）。空数组 = 模型弃权（或输出根本不是那个形状） */
+  rawCuts: unknown[];
+  /** 被丢掉的切点与理由，按被处理的顺序；`too-many-cuts` 那些排在最后 */
+  rejected: RejectedCut[];
+}
+
+/**
  * 把模型的输出收敛成一份可执行的切分计划。
  *
  * 输入 `parsed` 是**不可信**的（模型的 JSON），`pages` 是这一份谱子实际取到窄带文本的页。
  * 任何一步不过就丢**那一个**切点，不整份弃权。
+ *
+ * `cuts` / `evidence` 的语义与形状**不许变**（前端与小程序都在读）；新增的
+ * `rejected` / `rawCuts` 只加不改。
  */
-export function parseSegmentPlan(parsed: unknown, pages: PageText[]): SegmentPlan {
-  if (!parsed || typeof parsed !== "object") return { cuts: [], evidence: [] };
+export function parseSegmentPlan(parsed: unknown, pages: PageText[]): SegmentPlanParse {
+  if (!parsed || typeof parsed !== "object") {
+    return { cuts: [], evidence: [], rawCuts: [], rejected: [] };
+  }
   const record = parsed as Record<string, unknown>;
   const rawCuts = Array.isArray(record.cuts) ? record.cuts : [];
   const rawEvidence = Array.isArray(record.evidence) ? record.evidence : [];
@@ -108,6 +167,16 @@ export function parseSegmentPlan(parsed: unknown, pages: PageText[]): SegmentPla
   const pageCount = pages.reduce((m, p) => Math.max(m, p.page), 0);
 
   const kept: SegmentPlan = { cuts: [], evidence: [] };
+  const rejected: RejectedCut[] = [];
+  /** 丢一个切点。**每次 `continue` 都要留下理由** —— 这就是本次改动存在的理由本身。 */
+  const drop = (page: number | null, reason: RejectionReason, evidence?: string) => {
+    rejected.push(evidence === undefined ? { page, reason } : { page, reason, evidence });
+  };
+  /** 原始值 → 能带出去的页号。非有限数字（NaN/Infinity/字符串/对象）一律 null —— JSON 把 NaN 编成 null，
+   *  在这里显式归一才不会有「本地是 NaN、线上是 null」的两种形状（本仓记过这个坑）。 */
+  const pageOf = (value: unknown): number | null =>
+    typeof value === "number" && Number.isFinite(value) ? value : null;
+
   const seen = new Set<number>();
   for (let i = 0; i < rawCuts.length; i++) {
     const cut = rawCuts[i];
@@ -115,15 +184,37 @@ export function parseSegmentPlan(parsed: unknown, pages: PageText[]): SegmentPla
 
     // 页号必须是范围内的整数。**不含第 1 页**：第 1 页必然是第 1 段的开头，
     // 把它写成切点是模型在复述「第一页是开头」，不是边界。
-    if (typeof cut !== "number" || !Number.isSafeInteger(cut)) continue;
-    if (cut <= 1 || cut > pageCount) continue;
-    if (seen.has(cut)) continue;
+    if (typeof cut !== "number" || !Number.isSafeInteger(cut)) {
+      drop(pageOf(cut), "not-integer");
+      continue;
+    }
+    if (cut < 1 || cut > pageCount) {
+      drop(cut, "out-of-range");
+      continue;
+    }
+    if (cut === 1) {
+      drop(cut, "page-one");
+      continue;
+    }
+    if (seen.has(cut)) {
+      drop(cut, "duplicate");
+      continue;
+    }
 
     // 证据必须出自**那一页**（不是别页、也不是凭空写的）
-    if (typeof ev !== "string") continue;
+    if (typeof ev !== "string") {
+      drop(cut, "no-evidence");
+      continue;
+    }
     const source = textOf.get(cut);
-    if (source === undefined) continue;
-    if (!evidenceSupports(ev, source)) continue;
+    if (source === undefined) {
+      drop(cut, "no-page-text");
+      continue;
+    }
+    if (!evidenceSupports(ev, source)) {
+      drop(cut, "evidence-unsupported", ev);
+      continue;
+    }
 
     seen.add(cut);
     kept.cuts.push(cut);
@@ -134,8 +225,13 @@ export function parseSegmentPlan(parsed: unknown, pages: PageText[]): SegmentPla
   const order = kept.cuts.map((c, i) => i).sort((a, b) => kept.cuts[a] - kept.cuts[b]);
   const cuts = order.map((i) => kept.cuts[i]);
   const evidence = order.map((i) => kept.evidence[i]);
-  if (cuts.length > MAX_CUTS) return { cuts: [], evidence: [] };
-  return { cuts, evidence };
+  if (cuts.length > MAX_CUTS) {
+    // 整份退回「不切」时也要说清是**上界**把已通过的切点丢了 —— 否则响应又变成
+    // 「一条切点都没有」，与模型弃权同形（正是本次改动要消灭的那种不可区分）。
+    for (const c of cuts) drop(c, "too-many-cuts");
+    return { cuts: [], evidence: [], rawCuts, rejected };
+  }
+  return { cuts, evidence, rawCuts, rejected };
 }
 
 /**

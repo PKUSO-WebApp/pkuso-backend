@@ -565,6 +565,81 @@ Deno.test("文件名单独成段，且标明「不代表某一页」（#300）",
   eq(lastPrompt.includes("不代表某一页"), false, "没有文件名时不该出现那句");
 });
 
+/**
+ * prompt 文本债（pkuso-backend#97 的五笔）：都只动**模型看到的文本**，不动判据。
+ *
+ * 断言锚在 `lastPrompt`（这一次请求真的发出去的那一份）上，不是 `handler.ts` 的源码 ——
+ * 读源码只能证明「那行字还在文件里」，证不了它进了这次 prompt。
+ * 每条都带一条**反向自检**：把那一笔单独改回去，用例要真的红。
+ */
+Deno.test("prompt：规则表只有一处表头（#97 之 1）", async () => {
+  reset(() => new Response(OK_BODY, { status: 200 }));
+  await post({ ocr_text: SRC });
+  // 两处「规则：」中间夹着规则 0 ⇒ 读起来像两套并列的规则集，谁优先要模型自己猜。
+  eq(lastPrompt.split("规则：").length - 1, 1, "「规则：」只该有一处");
+  // ⚠️ 反向自检：合并表头**不等于**可以少一条规则 —— 只数表头的话，
+  // 把规则 0 整块删掉照样绿。
+  for (let i = 0; i <= 10; i++) {
+    eq(lastPrompt.includes(`\n${i}. `), true, `规则 ${i} 仍在 prompt 里`);
+  }
+});
+
+Deno.test("prompt：「抄不出就给空串、不要编」只交代一次（#97 之 2）", async () => {
+  reset(() => new Response(OK_BODY, { status: 200 }));
+  await post({ ocr_text: SRC });
+  // 规则 0 的 evidence 段与规则 2 原先各写一遍（规则 2 还回指「见规则 0」）——
+  // 两处会各自漂移，而只有一条是模型该信的。
+  eq(lastPrompt.split("抄不出").length - 1, 1, "「抄不出」只该有一处");
+  eq(lastPrompt.split("不要编").length - 1, 1, "「不要编」只该有一处");
+  // ⚠️ 反向自检：那一句**得留着**（两处都删掉也能让上面两条变绿）。
+  eq(lastPrompt.includes("一行可用原文都抄不出时，evidence 给空串"), true, "留下的那处在规则 0");
+});
+
+Deno.test("prompt：规则 8 的文件名区间与文件名那段不再打架（#97 之 3）", async () => {
+  reset(() => new Response(OK_BODY, { status: 200 }));
+  await post({ ocr_text: SRC, file_name: "…--_Piccolo,_Flute_1,_2.pdf" });
+  const from = lastPrompt.indexOf("\n8. ");
+  const to = lastPrompt.indexOf("\n9. ");
+  // 探针自检：取不到规则 8 那一段时下面全是空转（`indexOf` 给 -1，`slice` 会切出怪东西）。
+  eq(from > -1 && to > from, true, "规则 8 那一段要取到");
+  const rule8 = lastPrompt.slice(from, to);
+  // 这一条本身要留着 —— 它讲的是怎么填号，不是文件名怎么读。
+  eq(rule8.includes("不要照抄成"), true, "「区间要展开」这条不许一起删");
+  // #97 之 3：文件名里的区间描述的是**整本**该覆盖的号，与文件名那段「描述整本合订」
+  // 对齐。改之前这里只有「文件名是「Horn_1-4」…就写 [1,2,3,4]」，读起来像这一页的号
+  // —— 而段级误判正是从这条读法来的（见 `analysis.ts` 里 `fileName === null` 那段）。
+  eq(rule8.includes("整本合订"), true, "要说清那是**整本**的号");
+});
+
+Deno.test("prompt：开头不再声称「一份分谱首页」（#97 之 4）", async () => {
+  reset(() => new Response(OK_BODY, { status: 200 }));
+  await post({ ocr_text: SRC, file_name: "x.pdf" });
+  const cut = lastPrompt.indexOf("声部（section）");
+  eq(cut > -1, true, "取到开头那一段（否则下面全是空转）");
+  const head = lastPrompt.slice(0, cut);
+  // 三种调用形态都不是「分谱首页」：整份调用可能是总谱、段级调用是合订谱里的一段，
+  // 还有「一页 OCR 都没读到」那条路 —— 那条分支自己会说「没有可用的识别文本」，
+  // 与「下面是一份…识别文本」在同一次调用里直接打架。
+  eq(head.includes("分谱首页"), false, "开头不该替调用方断言这是「分谱首页」");
+  // ⚠️ 反向自检：把那句话删成一句含糊的话不算改好 —— 它要覆盖两条真实的路。
+  eq(head.includes("识别文本"), true, "要覆盖「有识别文本」那一路");
+  eq(head.includes("只有文件名"), true, "要覆盖「没有文本、只有文件名」那一路");
+});
+
+Deno.test("prompt：总谱那条不再要求 section 给「其他」（#97 之 5）", async () => {
+  reset(() => new Response(OK_BODY, { status: 200 }));
+  await post({ ocr_text: SRC, file_name: "x.pdf" });
+  const from = lastPrompt.indexOf("\n0. ");
+  const to = lastPrompt.indexOf("\n1. ");
+  eq(from > -1 && to > from, true, "规则 0 那一段要取到（否则下面全是空转）");
+  const rule0 = lastPrompt.slice(from, to);
+  // 死文本：`buildAnalysis` 的 isFullScore 分支把 section 写成 `FULL_SCORE_SECTION`
+  // （「总谱」），模型那一格给「其他」还是「总谱」都不影响响应。
+  eq(rule0.includes("section 给「其他」"), false, "总谱那条不该再要求 section 给「其他」");
+  // ⚠️ 反向自检：要删的只是**那一格怎么填**，总谱这个判断本身是这个函数唯一的「整份」信号。
+  eq(rule0.includes('"isFullScore": true'), true, "总谱判断本身不许一起删");
+});
+
 Deno.test("请求体畸形：一律 400，且不泄漏内部错误原文", async () => {
   reset(() => new Response(OK_BODY, { status: 200 }));
   // ⚠️ 里面那条 `{ ocr_text: 42 }` 是这个列表里**唯一**在验「值存在但不是字符串」的

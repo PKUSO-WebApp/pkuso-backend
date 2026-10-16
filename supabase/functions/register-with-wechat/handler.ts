@@ -142,8 +142,10 @@ export async function handler(req: Request): Promise<Response> {
     const lookup = await findUnfinishedWechatAuthUser(admin, openid)
     if (lookup.status !== 'found') {
       const detail = createFailure || describeLookupFailure(lookup)
+      // ⚠️ openid 记**完整值**，与 `wechat-auth` 那条日志一致（#103）：这条日志就是给
+      // 「这两次失败是不是同一个人」用的，截短之后认不了人 —— 截断方案已作废，别再改回去。
       console.error('[register-with-wechat] create user failed', {
-        openid: openid.slice(0, 12),
+        openid,
         create: createFailure,
         lookup: lookup.status,
         detail: describeLookupFailure(lookup),
