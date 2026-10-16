@@ -93,7 +93,13 @@ Deno.serve(async (req) => {
     }, 401)
   }
   const openid = wxData.openid
-  log('step', { step: 'code2session', mode, openid8: openid.slice(0, 8) })
+  // ⚠️ 记**完整** openid，字段名也照实叫 `openid` —— 别再改回截断（旧名 `openid8`）。
+  // 这条日志存在的唯一目的是排查登录失败，而排查里绕不开「这两次失败是不是同一个人」：
+  // 同一 appid 签发的 openid 共享一段前缀，截短之后的短串区分不了人 —— 按它归组会把
+  // 两个人拼成一个人的故事，而那正是排查时最想拿到的那个判断。完整值是**有意的取舍**：
+  // 它因此会落进日志流（受项目访问控制与保留期约束），换来日志里有一个真能认人的字段。
+  // 反过来说别的地方也别松口：**会话令牌不进日志**（成功路径只记 mode / isNew）。
+  log('step', { step: 'code2session', mode, openid })
 
   const admin = adminClient(env)
 
