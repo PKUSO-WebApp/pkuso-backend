@@ -134,6 +134,19 @@ Deno.test("prompt 的判据必须是「首页才有的标题块」，并排除�
   eq(lastPrompt.length > 300, true, "prompt 正文确实取到了");
 });
 
+Deno.test("prompt 规则 1：第 1 页是**范例**，不是要排除的干扰项", async () => {
+  reset(() => new Response(OK_BODY, { status: 200 }));
+  await post({ pages: PAGES, pageCount: 4 });
+  // 旧措辞（「它必然是第 1 份的开头，不是边界」）只说了「p1 是开头」，没说它的形状是首页的样子 ——
+  // 于是唯一的正例被当成了干扰项（§2 的第三个对照实验：只抹掉 p1 标题行，0/9 → 3/3）。
+  eq(lastPrompt.includes("它必然是第 1 份的开头"), false, "旧措辞必须消失");
+  eq(lastPrompt.includes("第 1 页就是第 1 份的首页"), true, "要点明 p1 就是第 1 份的首页");
+  eq(lastPrompt.includes("形状与第 1 页相同的后续页"), true, "要给出「同形状 ⇒ 新的一份」这条推论");
+  // 「不要把 p1 写进 cuts」这条不能丢：它是 parseSegmentPlan 的硬约束，丢了会多出一堆被丢弃的切点
+  eq(lastPrompt.includes("不要写进 cuts"), true, "p1 仍然不该写进 cuts");
+  eq(lastPrompt.length > 300, true, "自检：prompt 正文确实取到了");
+});
+
 Deno.test("正常路径：平铺字段 + 段区间 + 只请求一次", async () => {
   reset(() => new Response(OK_BODY, { status: 200 }));
   const res = await post({ pages: PAGES, pageCount: 4 });
@@ -146,6 +159,9 @@ Deno.test("正常路径：平铺字段 + 段区间 + 只请求一次", async () 
   // 段区间由后端算好（省得每个调用方各写一遍）
   eq(j.ranges, [{ from: 1, to: 3 }, { from: 4, to: 4 }], "段区间");
   eq(j.pageCount, 4, "回显页数");
+  // 新增的排查字段（只加不改）：通过了就没什么可报的
+  eq(j.rawCuts, [4], "rawCuts 回显模型给的原值");
+  eq(j.rejected, [], "没有丢弃记录");
 });
 
 Deno.test("模型弃权（cuts 为空）也是**成功**，不是错误", async () => {
@@ -161,6 +177,36 @@ Deno.test("模型弃权（cuts 为空）也是**成功**，不是错误", async 
   eq(j.cuts, [], "不切");
   // ⚠️ 不切时**必须**是「整份一段」，不能是空数组 —— 前端要拿它渲染
   eq(j.ranges, [{ from: 1, to: 4 }], "不切 = 整份一段");
+  // 弃权形态：模型什么都没给，也就没有任何丢弃记录
+  eq(j.rawCuts, [], "弃权：rawCuts 是空的");
+  eq(j.rejected, [], "弃权：没有丢弃记录");
+});
+
+Deno.test("模型给了切点但证据校验把它丢掉：响应里要看得见（§3.2 的整条理由）", async () => {
+  // 这就是「0/9 那几份不知道模型到底说了什么」的形态：模型**给了**第 4 页，
+  // 但抄来的证据在那一页的原文里找不到 ⇒ 切点被丢。改动前，这个响应与**弃权**
+  // 逐字相同（都是 `cuts: []`），两种情况的修法却是相反的。
+  reset(() =>
+    new Response(
+      JSON.stringify({
+        choices: [{
+          message: { content: '{"cuts":[4],"evidence":["Oboe I in C"]}' },
+        }],
+      }),
+      { status: 200 },
+    )
+  );
+  const res = await post({ pages: PAGES, pageCount: 4 });
+  const j = await res.json();
+  eq(res.status, 200, "被丢不是错误，仍然是成功");
+  eq(j.cuts, [], "切点确实被丢了（下游行为不变）");
+  eq(j.ranges, [{ from: 1, to: 4 }], "退回整份一段");
+  eq(j.rawCuts, [4], "模型给了什么 —— 这一条是本次改动的重点");
+  eq(
+    j.rejected,
+    [{ page: 4, reason: "evidence-unsupported", evidence: "Oboe I in C" }],
+    "丢在哪一步、它抄的是什么",
+  );
 });
 
 Deno.test("模型输出不是合法 JSON：走「不切」而不是报错", async () => {

@@ -127,7 +127,9 @@ ${missing.length ? `⚠️ 第 ${missing.join("、")} 页没取到文本（OCR �
 
 其余规则：
 1. cuts 是**新一份的起始页**，1-based，升序，最多 ${MAX_CUTS} 个。
-   **不要包含第 1 页** —— 它必然是第 1 份的开头，不是边界。
+   **第 1 页就是第 1 份的首页** —— 它的形状 = 首页该有的样子，也就是上面那条判据的**现成范例**。
+   所以：**形状与第 1 页相同的后续页，都是新的一份的开头**。
+   而第 1 页自己**不要写进 cuts** —— 它是第 1 段的定义，不是边界。
 2. evidence 与 cuts **按位置一一对应**：每个切点配一段**原样抄自那一页**的片段，
    保持原语言、原拼写，不要翻译、不要改写、不要补全。
    抄不出片段就**不要写那个切点** —— 没有证据的切点会被后端丢掉。
@@ -211,6 +213,11 @@ export async function handler(req: Request): Promise<Response> {
       const plan = parseSegmentPlan(parsed, pages);
 
       // 平铺在顶层（同 llm-analyze 的约定：前端读 data.cuts）
+      //
+      // `cuts` / `evidence` 的语义与形状**不许变**（web 端与小程序都在读，老客户端也不会跟着改）；
+      // `rawCuts` / `rejected` 是**只加不改**的排查字段：模型弃权时两个都是空，
+      // 「模型给了切点但被丢掉」时 `rawCuts` 非空、`rejected` 里逐条写着理由 ——
+      // 这两种情况过去在 API 层长得一模一样（见 `segment.ts` 的 REJECTION_REASONS）。
       return json({
         success: true,
         source: 'llm',

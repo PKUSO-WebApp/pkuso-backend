@@ -4,7 +4,9 @@ import {
   normalizeForMatch,
   parseSegmentPlan,
   planToRanges,
+  REJECTION_REASONS,
   type PageText,
+  type RejectionReason,
 } from "./segment.ts";
 // ⚠️ 只为**一致性**用例而 import：`segment.ts` 里那份归一化/证据函数是副本
 // （理由见那边的注释：函数逐个部署，跨目录 import 没有先例）。这条用例就是
@@ -159,6 +161,106 @@ Deno.test("段数上界：超过就整个不要（荒唐输出宁可退回不切
     MAX_CUTS,
     "正好到上界应放行",
   );
+});
+
+/**
+ * §3.2：**「模型弃权」与「模型给了切点但被丢掉」必须在 API 层可区分。**
+ *
+ * 这两种情况的修法相反（前者改 prompt，后者改校验/抄写规则），而在本次改动之前
+ * 响应里都只有一个空 `cuts` —— 那几份 0/9 的合订谱就是卡在这里查不下去的。
+ */
+Deno.test("弃权 与 被丢掉 可区分：rawCuts 与 rejected", () => {
+  const abstain = parseSegmentPlan({ cuts: [], evidence: [] }, pages);
+  eq(abstain.rawCuts, [], "弃权：rawCuts 是空的（模型什么也没给）");
+  eq(abstain.rejected, [], "弃权：一条丢弃记录都没有");
+
+  const dropped = parseSegmentPlan({ cuts: [4], evidence: ["编的"] }, pages);
+  eq(dropped.cuts, [], "被丢：切点确实没了");
+  eq(dropped.rawCuts, [4], "被丢：模型给了什么要留着");
+  eq(
+    dropped.rejected,
+    [{ page: 4, reason: "evidence-unsupported", evidence: "编的" }],
+    "被丢：理由与它抄的那段都在",
+  );
+});
+
+Deno.test("原始 cuts 原样回传（未校验），非数字的也一样", () => {
+  const r = parseSegmentPlan(
+    { cuts: [4, "5", null, { page: 6 }, 1], evidence: [] },
+    pages,
+  );
+  eq(r.rawCuts, [4, "5", null, { page: 6 }, 1], "rawCuts 是原文，不过滤不加工");
+  eq(r.cuts, [], "一个都没通过（第 1 页不是边界、其余连证据都没有）");
+});
+
+/**
+ * **每条丢弃理由各一条**（表驱动）。`REJECTION_REASONS` 加了新值而这里没跟上时，
+ * 下面那条完整性断言会红 —— 否则「理由」这个契约会悄悄地不完整（前端永远收不到新值）。
+ */
+Deno.test("每条丢弃理由各一条用例（表驱动 + 完整性自检）", () => {
+  const manyPages: PageText[] = Array.from({ length: MAX_CUTS + 5 }, (_, i) => ({
+    page: i + 1,
+    text: `Part ${i + 1}`,
+  }));
+  const overCap = Array.from({ length: MAX_CUTS + 1 }, (_, i) => i + 2);
+  // 第 3 页缺文本（OCR 失败、前端没交上来）—— 切点落在它上面时无从校验
+  const gapped: PageText[] = [
+    { page: 1, text: "Corno I in F" },
+    { page: 2, text: "2" },
+    { page: 4, text: "Corno II in F" },
+  ];
+
+  const cases: Array<{
+    reason: RejectionReason;
+    parsed: unknown;
+    pages?: PageText[];
+    /** 这个用例里**通过了**的切点（其余都被丢） */
+    cuts: number[];
+  }> = [
+    { reason: "not-integer", parsed: { cuts: ["4"], evidence: ["Corno II in F"] }, cuts: [] },
+    { reason: "out-of-range", parsed: { cuts: [99], evidence: ["Corno II in F"] }, cuts: [] },
+    { reason: "page-one", parsed: { cuts: [1], evidence: ["Corno I in F"] }, cuts: [] },
+    {
+      reason: "duplicate",
+      parsed: { cuts: [4, 4], evidence: ["Corno II in F", "Corno II in F"] },
+      cuts: [4],
+    },
+    { reason: "no-evidence", parsed: { cuts: [4], evidence: [] }, cuts: [] },
+    { reason: "no-page-text", parsed: { cuts: [3], evidence: ["Corno I in F"] }, pages: gapped, cuts: [] },
+    { reason: "evidence-unsupported", parsed: { cuts: [4], evidence: ["编的"] }, cuts: [] },
+    {
+      reason: "too-many-cuts",
+      parsed: { cuts: overCap, evidence: overCap.map((c) => `Part ${c}`) },
+      pages: manyPages,
+      cuts: [],
+    },
+  ];
+
+  // 完整性：表里恰好覆盖 REJECTION_REASONS 的每一个值（多一个、少一个都红）
+  eq(
+    cases.map((c) => c.reason).sort(),
+    [...REJECTION_REASONS].sort(),
+    "理由清单与用例表必须一一对应",
+  );
+
+  for (const c of cases) {
+    const r = parseSegmentPlan(c.parsed, c.pages ?? pages);
+    eq(r.cuts, c.cuts, `${c.reason} 的 cuts`);
+    // ⚠️ 断言的是**期望的那条理由**，不是「rejected 非空」—— 后者对任何理由都成立
+    //（「一个分支的专属文案要用只有它会说的话去钉」，本仓记过这条）
+    const got = r.rejected.map((x) => x.reason);
+    eq(got.includes(c.reason), true, `${c.reason} 应出现在 rejected 里（实际 ${JSON.stringify(got)}）`);
+  }
+});
+
+Deno.test("rejected 的形状能上 JSON 线：NaN / Infinity 一律归一成 null", () => {
+  // ⚠️ 本仓栽过：`JSON.stringify(NaN) === JSON.stringify(Infinity) === "null"`，
+  // 于是「本地是 NaN、发出去是 null」是两种形状。这里用 JSON 往返把它钉住。
+  for (const bad of [NaN, Infinity, -Infinity, "4", null, { page: 4 }, [4]]) {
+    const r = parseSegmentPlan({ cuts: [bad], evidence: ["Corno II in F"] }, pages);
+    eq(r.rejected, [{ page: null, reason: "not-integer" }], `${JSON.stringify(bad)} 的理由`);
+    eq(JSON.parse(JSON.stringify(r.rejected)), r.rejected, `${JSON.stringify(bad)} 的 JSON 往返`);
+  }
 });
 
 Deno.test("缺页不影响页号语义（切点在页号空间，不是数组下标）", () => {
