@@ -313,6 +313,8 @@ export type Database = {
           content: string
           created_at: string
           id: string
+          kind: string | null
+          meta: Json | null
           read_at: string | null
           title: string
           user_id: string
@@ -322,6 +324,8 @@ export type Database = {
           content: string
           created_at?: string
           id?: string
+          kind?: string | null
+          meta?: Json | null
           read_at?: string | null
           title: string
           user_id: string
@@ -331,6 +335,8 @@ export type Database = {
           content?: string
           created_at?: string
           id?: string
+          kind?: string | null
+          meta?: Json | null
           read_at?: string | null
           title?: string
           user_id?: string
