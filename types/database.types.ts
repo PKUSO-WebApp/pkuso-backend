@@ -738,33 +738,6 @@ export type Database = {
           },
         ]
       }
-      sheet_music_analysis_logs: {
-        Row: {
-          created_at: string | null
-          extracted_text: string | null
-          file_name: string
-          id: string
-          llm_result: Json | null
-          user_correction: Json | null
-        }
-        Insert: {
-          created_at?: string | null
-          extracted_text?: string | null
-          file_name: string
-          id?: string
-          llm_result?: Json | null
-          user_correction?: Json | null
-        }
-        Update: {
-          created_at?: string | null
-          extracted_text?: string | null
-          file_name?: string
-          id?: string
-          llm_result?: Json | null
-          user_correction?: Json | null
-        }
-        Relationships: []
-      }
       sheet_music_annotation_history: {
         Row: {
           file_id: string
@@ -1216,6 +1189,7 @@ export type Database = {
         }[]
       }
       is_admin: { Args: never; Returns: boolean }
+      is_valid_sub_parts: { Args: { nums: number[] }; Returns: boolean }
       list_my_devices: {
         Args: never
         Returns: {
