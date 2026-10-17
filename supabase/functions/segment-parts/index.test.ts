@@ -50,7 +50,7 @@ const OK_BODY = JSON.stringify({
 const PAGES = [
   { page: 1, text: "Corno I in F" },
   { page: 2, text: "2" },
-  { page: 3, text: "3" },
+  { page: 3, text: "Violino I" },
   { page: 4, text: "Corno II in F" },
 ];
 
@@ -147,8 +147,8 @@ Deno.test("prompt 规则 1：第 1 页是**范例**，不是要排除的干扰�
   eq(lastPrompt.includes("它必然是第 1 份的开头"), false, "旧措辞必须消失");
   eq(lastPrompt.includes("第 1 页就是第 1 份的首页"), true, "要点明 p1 就是第 1 份的首页");
   eq(lastPrompt.includes("形状与第 1 页相同的后续页"), true, "要给出「同形状 ⇒ 新的一份」这条推论");
-  // 「不要把 p1 写进 cuts」这条不能丢：它是 parseSegmentPlan 的硬约束，丢了会多出一堆被丢弃的切点
-  eq(lastPrompt.includes("不要写进 cuts"), true, "p1 仍然不该写进 cuts");
+  // 「不要把 p1 写进候选」这条不能丢：它是 parseCandidatePlan 的硬约束，丢了会多出一堆被丢弃的候选
+  eq(lastPrompt.includes("不要写进 candidates"), true, "p1 仍然不该写进 candidates");
   eq(lastPrompt.length > 300, true, "自检：prompt 正文确实取到了");
 });
 
@@ -170,6 +170,34 @@ Deno.test("正常路径：平铺字段 + 段区间 + 只请求一次", async () 
   eq(j.parsed, true, "解析成功");
   eq("parseError" in j, false, "解析成功时不该有 parseError");
   eq(j.modelOutput, JSON.stringify({ cuts: [4], evidence: ["Corno II in F"] }), "模型原文回传");
+});
+
+Deno.test("新契约：候选带理由与置信度，低置信只回传不自动切", async () => {
+  const model = JSON.stringify({
+    candidates: [
+      { page: 4, reason: "标题块与第 1 页同形状", confidence: 0.92, evidence: "Corno II in F" },
+      { page: 3, reason: "只是怀疑", confidence: 0.3, evidence: "Violino I" },
+    ],
+  });
+  reset(() =>
+    new Response(JSON.stringify({ choices: [{ message: { content: model } }] }), { status: 200 })
+  );
+  const res = await post({ pages: PAGES, pageCount: 4 });
+  const j = await res.json();
+  eq(res.status, 200, "状态码");
+  eq(j.cuts, [4], "只有高置信候选进入 cuts");
+  eq(j.evidence, ["Corno II in F"], "证据与 cuts 对齐");
+  eq(j.candidates.length, 2, "两个候选都回传");
+  // 按页号升序：低置信的第 3 页排在前面
+  eq(j.candidates[0].page, 3, "候选按页号升序");
+  eq(j.candidates[0].accepted, false, "低置信不采纳");
+  eq(j.candidates[0].rejection, "low-confidence", "低置信的理由");
+  eq(j.candidates[1].accepted, true, "高置信采纳");
+  eq(j.candidates[1].reason, "标题块与第 1 页同形状", "理由原样回传");
+  eq(j.candidates[1].confidence, 0.92, "置信度原样回传");
+  // 低置信也进 rejected：排查字段与旧路径同一套
+  eq(j.rejected, [{ page: 3, reason: "low-confidence" }], "低置信记入 rejected");
+  eq(j.parsed, true, "解析成功");
 });
 
 Deno.test("模型弃权（cuts 为空）也是**成功**，不是错误", async () => {

@@ -113,6 +113,12 @@ export const REJECTION_REASONS = [
   "no-page-text",
   /** 引文没在**那一页**的原文里找到（幻觉证据，或抄错了页） */
   "evidence-unsupported",
+  /** 候选没有给理由（`reason` 缺失或空串）—— 理由是与 `cuts` 同一版的契约要求 */
+  "no-reason",
+  /** 置信度不是 0..1 的有限数字 */
+  "bad-confidence",
+  /** 置信度低于自动采纳阈值：候选只展示给人，不自动切（方向仍是「宁可少切」） */
+  "low-confidence",
   /** 通过校验的切点数超过 MAX_CUTS：整个计划退回「不切」 */
   "too-many-cuts",
 ] as const;
@@ -232,6 +238,163 @@ export function parseSegmentPlan(parsed: unknown, pages: PageText[]): SegmentPla
     return { cuts: [], evidence: [], rawCuts, rejected };
   }
   return { cuts, evidence, rawCuts, rejected };
+}
+
+/**
+ * 候选被**自动采纳**的置信度下限。
+ *
+ * ⚠️ 这不是「模型有多准」的校准值，而是一条**方向性**的阈值：低于它的候选仍然回传给界面
+ * （由人决定要不要），但**不进入 `cuts`** —— 分段的两条硬默认里「宁可少切」优先于「多切」。
+ * 模型自报的置信度没有经过校准，所以它只能当提示，不能单独当判据（证据校验仍然必须通过）。
+ */
+export const MIN_CUT_CONFIDENCE = 0.6;
+
+/** 一个候选首页（模型给的原样 + 后端裁决）。 */
+export interface SegmentCandidate {
+  /** 页号；不是有限数字时为 null（原始值在 `rawCuts` 里） */
+  page: number | null;
+  /** 模型写的理由；缺失/空串时为 null（这种候选不会被采纳） */
+  reason: string | null;
+  /** 模型自报的置信度；不是 0..1 的数字时为 null */
+  confidence: number | null;
+  /** 是否进入 `cuts`（= 通过全部校验且置信度 ≥ `MIN_CUT_CONFIDENCE`） */
+  accepted: boolean;
+  /** 没被采纳时的理由（slug，与 `REJECTION_REASONS` 同一套取值） */
+  rejection?: RejectionReason;
+}
+
+export interface CandidatePlanParse extends SegmentPlanParse {
+  /** 模型给的全部候选（含被采纳的），按页号升序、`page` 为 null 的排最后 */
+  candidates: SegmentCandidate[];
+}
+
+/**
+ * 把「候选首页 + 理由 + 置信度」收敛成可执行的切分计划（pkuso-backend#96 §6 契约改造）。
+ *
+ * 与 `parseSegmentPlan` 的关系：**`cuts` 的语义不变**，只是它现在由候选推导出来。
+ * 模型若仍按旧形状（只有 `cuts`/`evidence`）回包，自动退回旧解析 —— 契约是**只加不改**的。
+ */
+export function parseCandidatePlan(parsed: unknown, pages: PageText[]): CandidatePlanParse {
+  if (!parsed || typeof parsed !== "object") {
+    return { cuts: [], evidence: [], rawCuts: [], rejected: [], candidates: [] };
+  }
+  const record = parsed as Record<string, unknown>;
+
+  // 旧形状兜底：模型没按新契约回包时，行为与改动前逐字相同
+  if (!Array.isArray(record.candidates)) {
+    const old = parseSegmentPlan(parsed, pages);
+    return {
+      ...old,
+      candidates: old.cuts.map((page) => ({
+        page,
+        reason: null,
+        confidence: null,
+        accepted: true,
+      })),
+    };
+  }
+
+  const textOf = new Map(pages.map((p) => [p.page, p.text]));
+  const pageCount = pages.reduce((m, p) => Math.max(m, p.page), 0);
+
+  const rawCuts: unknown[] = [];
+  const candidates: SegmentCandidate[] = [];
+  const rejected: RejectedCut[] = [];
+  const kept: SegmentPlan = { cuts: [], evidence: [] };
+  const seen = new Set<number>();
+
+  /** 丢一个候选：既不采纳、也进 `rejected`（与旧路径同一套排查字段）。 */
+  const drop = (c: SegmentCandidate, reason: RejectionReason, evidence?: string) => {
+    c.accepted = false;
+    c.rejection = reason;
+    rejected.push(evidence === undefined ? { page: c.page, reason } : { page: c.page, reason, evidence });
+  };
+
+  for (const item of record.candidates) {
+    if (!item || typeof item !== "object") {
+      const c: SegmentCandidate = { page: null, reason: null, confidence: null, accepted: false };
+      candidates.push(c);
+      drop(c, "not-integer");
+      continue;
+    }
+    const raw = item as Record<string, unknown>;
+    const c: SegmentCandidate = {
+      page: typeof raw.page === "number" && Number.isFinite(raw.page) ? raw.page : null,
+      reason: typeof raw.reason === "string" && raw.reason.trim() ? raw.reason.trim() : null,
+      confidence: typeof raw.confidence === "number" && Number.isFinite(raw.confidence) ? raw.confidence : null,
+      accepted: false,
+    };
+    candidates.push(c);
+    rawCuts.push(raw.page);
+
+    // 页号：安全整数、范围、不是第 1 页、不重复（与旧路径逐条一致）
+    if (typeof raw.page !== "number" || !Number.isSafeInteger(raw.page)) {
+      drop(c, "not-integer");
+      continue;
+    }
+    if (raw.page < 1 || raw.page > pageCount) {
+      drop(c, "out-of-range");
+      continue;
+    }
+    if (raw.page === 1) {
+      drop(c, "page-one");
+      continue;
+    }
+    if (seen.has(raw.page)) {
+      drop(c, "duplicate");
+      continue;
+    }
+    // 理由：契约要求每个候选都说清「为什么像首页」—— 没说清的不能自动切
+    if (c.reason === null) {
+      drop(c, "no-reason");
+      continue;
+    }
+    // 置信度：模型自报的数值只当提示；不合形状的候选一律不采纳（而不是猜一个默认值）
+    if (c.confidence === null || c.confidence < 0 || c.confidence > 1) {
+      drop(c, "bad-confidence");
+      continue;
+    }
+    // 证据：必须出自**那一页**（与旧路径同一套校验）
+    const ev = raw.evidence;
+    const source = textOf.get(raw.page);
+    if (typeof ev !== "string") {
+      drop(c, "no-evidence");
+      continue;
+    }
+    if (source === undefined) {
+      drop(c, "no-page-text");
+      continue;
+    }
+    if (!evidenceSupports(ev, source)) {
+      drop(c, "evidence-unsupported", ev);
+      continue;
+    }
+    // 低置信：照回传、由人决定，但**不自动切**（「宁可少切」）
+    if (c.confidence < MIN_CUT_CONFIDENCE) {
+      drop(c, "low-confidence");
+      continue;
+    }
+
+    seen.add(raw.page);
+    c.accepted = true;
+    kept.cuts.push(raw.page);
+    kept.evidence.push(ev);
+  }
+
+  // 升序输出：模型不保证顺序，而下游按顺序切片
+  const order = kept.cuts.map((_, i) => i).sort((a, b) => kept.cuts[a] - kept.cuts[b]);
+  const cuts = order.map((i) => kept.cuts[i]);
+  const evidence = order.map((i) => kept.evidence[i]);
+  if (cuts.length > MAX_CUTS) {
+    for (const c of cuts) drop(candidates.find((x) => x.page === c)!, "too-many-cuts");
+    return { cuts: [], evidence: [], rawCuts, rejected, candidates: sorted(candidates) };
+  }
+  return { cuts, evidence, rawCuts, rejected, candidates: sorted(candidates) };
+}
+
+/** 候选按页号升序；`page` 为 null 的排最后（模型给的不是数字，展示时也不该插在中间）。 */
+function sorted(list: SegmentCandidate[]): SegmentCandidate[] {
+  return [...list].sort((a, b) => (a.page ?? Infinity) - (b.page ?? Infinity));
 }
 
 /**

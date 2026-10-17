@@ -2,7 +2,7 @@ import { requireUser } from "../_shared/auth.ts";
 import { CORS_HEADERS, json } from "../_shared/http.ts";
 import { defuseFence } from "../_shared/prompt.ts";
 import { createRetry, fetchJsonWithRetry } from "../_shared/retry.ts";
-import { MAX_CUTS, parseSegmentPlan, planToRanges, type PageText } from "./segment.ts";
+import { MAX_CUTS, parseCandidatePlan, planToRanges, type PageText } from "./segment.ts";
 
 /*
  * handler 单独成模块，index.ts 只负责把它交给 serve()。
@@ -72,8 +72,11 @@ function parseModelOutput(responseText: string): ParsedModelOutput {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return { parsed: false, value, parseError: "模型输出是合法 JSON，但不是对象" };
   }
-  if (!Array.isArray((value as Record<string, unknown>).cuts)) {
-    return { parsed: false, value, parseError: "模型输出的对象里没有 cuts 数组" };
+  // 新契约是 `candidates`；旧形状（只有 `cuts`）仍然认 —— 模型偶尔会忽略格式要求，
+  // 而这两种形状都能被 `parseCandidatePlan` 处理。
+  const record = value as Record<string, unknown>;
+  if (!Array.isArray(record.candidates) && !Array.isArray(record.cuts)) {
+    return { parsed: false, value, parseError: "模型输出的对象里既没有 candidates 也没有 cuts 数组" };
   }
   return { parsed: true, value };
 }
@@ -143,12 +146,10 @@ function buildPrompt(pages: PageText[], pageCount: number): string {
   return `你是乐团谱务助手。下面是一份**合订分谱**逐页的「顶部窄带」识别文本。
 窄带只取了每页最上面一条。
 
-这份谱子共 ${pageCount} 页。
-${missing.length ? `⚠️ 第 ${missing.join("、")} 页没取到文本（OCR 失败或空白）—— 不要在那几页上给切点。\n` : ""}
 请判断**哪几页是新的一份分谱的开头**。
 
 只返回一个 JSON 对象，不要任何解释文字：
-{"cuts": [页码...], "evidence": ["原文片段"...]}
+{"candidates": [{"page": 页码, "reason": "为什么像新一份的首页（一句话）", "confidence": 0 到 1 的小数, "evidence": "原样抄自该页的片段"}]}
 
 ⚠️ **判据是「这一页出现了只在该份首页才有的版式」**：
 
@@ -183,18 +184,27 @@ ${missing.length ? `⚠️ 第 ${missing.join("、")} 页没取到文本（OCR �
 「作曲家姓 — 作品名」的单行页眉形状不同。
 
 其余规则：
-1. cuts 是**新一份的起始页**，1-based，升序，最多 ${MAX_CUTS} 个。
+1. candidates 是**疑似新一份起始页**的列表，每个候选一个对象：
+   「page」是**新一份的起始页**，1-based，升序，最多 ${MAX_CUTS} 个。
    **第 1 页就是第 1 份的首页** —— 它的形状 = 首页该有的样子，也就是上面那条判据的**现成范例**。
    所以：**形状与第 1 页相同的后续页，都是新的一份的开头**。
-   而第 1 页自己**不要写进 cuts** —— 它是第 1 段的定义，不是边界。
-2. evidence 与 cuts **按位置一一对应**：每个切点配一段**原样抄自那一页**的片段，
-   保持原语言、原拼写，不要翻译、不要改写、不要补全。
-   抄不出片段就**不要写那个切点** —— 没有证据的切点会被后端丢掉。
-3. **看不出边界就返回 {"cuts": [], "evidence": []}**，不要猜。
-4. **宁可少切，不可多切**：少切只是把整份当成一份处理（用户还能人工改），
-   多切会把两份谱的页混进同一段、整份归错人。不确定的边界一律不写。
-5. 一份里含多个分声部（圆号 1、2、3 订在一起）**不构成边界** —— 那是别的字段的事。
+   而第 1 页自己**不要写进 candidates** —— 它是第 1 段的定义，不是边界。
+2. 「evidence」必须**原样抄自那一页**，保持原语言、原拼写，不要翻译、不要改写、不要补全。
+   抄不出片段就**不要写那个候选** —— 没有证据的候选不会被采纳。
+3. 「reason」必须写：一句话说清「这一页的什么版式让你认为是新一份的首页」。
+   写不出理由的候选不会被采纳。
+4. 「confidence」是**你有多确定**（0 到 1）：0.9 以上 = 明确；0.6–0.9 = 比较像；0.6 以下 = 只是怀疑。
+   **低于 0.6 的候选不会被自动切成边界，但会展示给管理员** —— 所以拿不准的也要给出来，
+   如实给低分；**不要为了让它被采纳而虚报分数**。
+5. **看不出边界就返回 {"candidates": []}**，不要猜。
+6. **宁可少切，不可多切**：少切只是把整份当成一份处理（用户还能人工改），
+   多切会把两份谱的页混进同一段、整份归错人。不确定的边界一律给低置信度。
+7. 一份里含多个分声部（圆号 1、2、3 订在一起）**不构成边界** —— 那是别的字段的事。
 
+以下全部是**这一次**的输入（变量放在最后，前面的规则部分是固定的，能吃前缀缓存）：
+
+这份谱子共 ${pageCount} 页。
+${missing.length ? `⚠️ 第 ${missing.join("、")} 页没取到文本（OCR 失败或空白）—— 不要在那几页上给候选。\n` : ""}
 识别文本：
 """
 ${defuseFence(body)}
@@ -246,8 +256,9 @@ export async function handler(req: Request): Promise<Response> {
           model: 'deepseek-chat',
           messages: [{ role: 'user', content: prompt }],
           temperature: 0,
-          // evidence 让输出变长（每个切点都要抄一段），太小会被截断成非法 JSON
-          max_tokens: 500,
+          // 每个候选都要带 reason + evidence，比旧的 `cuts` 形状长得多；
+          // 太小会被截断成非法 JSON（截断后的输出在 API 层与「弃权」同形，很难查）。
+          max_tokens: 900,
           response_format: { type: 'json_object' },
         }),
       },
@@ -261,10 +272,13 @@ export async function handler(req: Request): Promise<Response> {
       // 解析用 trim 后的文本；回传给调用方的是**原文**（上面的 modelOutput）
       const responseText = modelOutput.trim();
 
-      // 解析失败**不弃权整份请求**，而是走「不切」—— 与 parseSegmentPlan 的默认一致：
+      // 解析失败**不弃权整份请求**，而是走「不切」—— 与 parseCandidatePlan 的默认一致：
       // 不切 = 退回今天的行为（整份当一个声部），用户还能人工改。
+      //
+      // 模型若仍按旧形状（只有 cuts/evidence）回包，`parseCandidatePlan` 内部会自动退回旧解析
+      // —— 契约只加不改，老客户端与旧模型的产物都还能读。
       const parsedOutput = parseModelOutput(responseText);
-      const plan = parseSegmentPlan(parsedOutput.value, pages);
+      const plan = parseCandidatePlan(parsedOutput.value, pages);
 
       // 平铺在顶层（同 llm-analyze 的约定：前端读 data.cuts）
       //
@@ -278,6 +292,10 @@ export async function handler(req: Request): Promise<Response> {
       //  · `parsed === false` ⇒ 输出没解析出来（原文在 `modelOutput`，原因在 `parseError`）；
       //  · `parsed === true` 且 `rejected` 非空 ⇒ 切点被校验丢掉（逐条理由在 `rejected`）。
       // 只看 `rawCuts: []` 时前两种同形 —— 这正是这些字段存在的理由。
+      //
+      // `candidates`（pkuso-backend#96 §6 契约改造）同样**只加不改**：模型给的全部候选，
+      // 每个带 `reason` / `confidence` / `accepted` / `rejection`。`cuts` 仍然只放
+      // 「通过证据校验且置信度 ≥ MIN_CUT_CONFIDENCE」的那些 —— 老客户端读到的东西一字不变。
       return json({
         success: true,
         source: 'llm',
