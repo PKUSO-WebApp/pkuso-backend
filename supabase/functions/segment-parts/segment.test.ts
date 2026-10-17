@@ -2,6 +2,7 @@ import {
   evidenceSupports,
   MAX_CUTS,
   normalizeForMatch,
+  parseCandidatePlan,
   parseSegmentPlan,
   planToRanges,
   REJECTION_REASONS,
@@ -228,6 +229,22 @@ Deno.test("每条丢弃理由各一条用例（表驱动 + 完整性自检）", 
     { reason: "no-evidence", parsed: { cuts: [4], evidence: [] }, cuts: [] },
     { reason: "no-page-text", parsed: { cuts: [3], evidence: ["Corno I in F"] }, pages: gapped, cuts: [] },
     { reason: "evidence-unsupported", parsed: { cuts: [4], evidence: ["编的"] }, cuts: [] },
+    // 下面三条只可能出现在新契约（candidates）里 —— 旧形状没有 reason / confidence 这两个字段
+    {
+      reason: "no-reason",
+      parsed: { candidates: [{ page: 4, confidence: 0.9, evidence: "Corno II in F" }] },
+      cuts: [],
+    },
+    {
+      reason: "bad-confidence",
+      parsed: { candidates: [{ page: 4, reason: "标题块", confidence: "很高", evidence: "Corno II in F" }] },
+      cuts: [],
+    },
+    {
+      reason: "low-confidence",
+      parsed: { candidates: [{ page: 4, reason: "标题块", confidence: 0.3, evidence: "Corno II in F" }] },
+      cuts: [],
+    },
     {
       reason: "too-many-cuts",
       parsed: { cuts: overCap, evidence: overCap.map((c) => `Part ${c}`) },
@@ -244,7 +261,9 @@ Deno.test("每条丢弃理由各一条用例（表驱动 + 完整性自检）", 
   );
 
   for (const c of cases) {
-    const r = parseSegmentPlan(c.parsed, c.pages ?? pages);
+    // 用 parseCandidatePlan 而不是 parseSegmentPlan：它对旧形状（只有 cuts）会自动退回旧解析，
+    // 于是同一张表能同时覆盖两条路径的理由清单（新契约的三条理由只在新形状里出现）。
+    const r = parseCandidatePlan(c.parsed, c.pages ?? pages);
     eq(r.cuts, c.cuts, `${c.reason} 的 cuts`);
     // ⚠️ 断言的是**期望的那条理由**，不是「rejected 非空」—— 后者对任何理由都成立
     //（「一个分支的专属文案要用只有它会说的话去钉」，本仓记过这条）
