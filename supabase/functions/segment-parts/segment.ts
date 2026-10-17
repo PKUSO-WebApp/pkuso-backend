@@ -119,6 +119,8 @@ export const REJECTION_REASONS = [
   "bad-confidence",
   /** 置信度低于自动采纳阈值：候选只展示给人，不自动切（方向仍是「宁可少切」） */
   "low-confidence",
+  /** 候选页前面那一段里没有任何乐器名（只是把封面页单独切出来）—— 见 `prevInstrument` 的校验 */
+  "no-instrument-before",
   /** 通过校验的切点数超过 MAX_CUTS：整个计划退回「不切」 */
   "too-many-cuts",
 ] as const;
@@ -302,6 +304,8 @@ export function parseCandidatePlan(parsed: unknown, pages: PageText[]): Candidat
   const rejected: RejectedCut[] = [];
   const kept: SegmentPlan = { cuts: [], evidence: [] };
   const seen = new Set<number>();
+  /** 已通过单条校验的候选（还要过第二遍「前段有乐器名」） */
+  const accepted: Array<{ page: number; evidence: string; prevInstrument: unknown }> = [];
 
   /** 丢一个候选：既不采纳、也进 `rejected`（与旧路径同一套排查字段）。 */
   const drop = (c: SegmentCandidate, reason: RejectionReason, evidence?: string) => {
@@ -377,8 +381,34 @@ export function parseCandidatePlan(parsed: unknown, pages: PageText[]): Candidat
 
     seen.add(raw.page);
     c.accepted = true;
-    kept.cuts.push(raw.page);
-    kept.evidence.push(ev);
+    accepted.push({ page: raw.page, evidence: ev, prevInstrument: raw.prevInstrument });
+  }
+
+  // ⚠️ **第二遍：校验「候选页前面那一段里有乐器名」**（pkuso-web 的封面页误切就是靠这条挡的）。
+  // 模型自报 `prevInstrument`，后端再拿它去**前一段的原文**里做子串校验 —— 两个条件都过才算数：
+  // 既不能是空/null，也不能是模型编的（必须在原文里找得到）。字段**缺席**时跳过（旧形状兜底）。
+  accepted.sort((a, b) => a.page - b.page);
+  let prevStart = 1;
+  for (const a of accepted) {
+    if (a.prevInstrument !== undefined) {
+      const ctx = pages
+        .filter((p) => p.page >= prevStart && p.page <= a.page - 1)
+        .map((p) => p.text)
+        .join("\n");
+      const claimed = typeof a.prevInstrument === "string" ? a.prevInstrument.trim() : "";
+      const ok = claimed !== "" && evidenceSupports(claimed, ctx);
+      if (!ok) {
+        drop(
+          candidates.find((x) => x.page === a.page)!,
+          "no-instrument-before",
+          claimed === "" ? undefined : claimed,
+        );
+        continue;
+      }
+    }
+    kept.cuts.push(a.page);
+    kept.evidence.push(a.evidence);
+    prevStart = a.page;
   }
 
   // 升序输出：模型不保证顺序，而下游按顺序切片

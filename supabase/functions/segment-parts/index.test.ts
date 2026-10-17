@@ -149,6 +149,8 @@ Deno.test("prompt 规则 1：第 1 页是**范例**，不是要排除的干扰�
   eq(lastPrompt.includes("形状与第 1 页相同的后续页"), true, "要给出「同形状 ⇒ 新的一份」这条推论");
   // 「不要把 p1 写进候选」这条不能丢：它是 parseCandidatePlan 的硬约束，丢了会多出一堆被丢弃的候选
   eq(lastPrompt.includes("不要写进 candidates"), true, "p1 仍然不该写进 candidates");
+  // 编号变化单独不算，但三条同时成立时可以作为证据（小号 II 那一类）
+  eq(lastPrompt.includes("三条同时成立时，编号的变化可以作为边界证据"), true, "合取例外必须在");
   eq(lastPrompt.length > 300, true, "自检：prompt 正文确实取到了");
 });
 
