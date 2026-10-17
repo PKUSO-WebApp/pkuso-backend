@@ -158,6 +158,9 @@ Deno.test("正常路径：平铺字段 + 段区间 + 只请求一次", async () 
   // 新增的排查字段（只加不改）：通过了就没什么可报的
   eq(j.rawCuts, [4], "rawCuts 回显模型给的原值");
   eq(j.rejected, [], "没有丢弃记录");
+  eq(j.parsed, true, "解析成功");
+  eq("parseError" in j, false, "解析成功时不该有 parseError");
+  eq(j.modelOutput, JSON.stringify({ cuts: [4], evidence: ["Corno II in F"] }), "模型原文回传");
 });
 
 Deno.test("模型弃权（cuts 为空）也是**成功**，不是错误", async () => {
@@ -176,6 +179,10 @@ Deno.test("模型弃权（cuts 为空）也是**成功**，不是错误", async 
   // 弃权形态：模型什么都没给，也就没有任何丢弃记录
   eq(j.rawCuts, [], "弃权：rawCuts 是空的");
   eq(j.rejected, [], "弃权：没有丢弃记录");
+  // 真弃权 = **解析成功**且 cuts 为空 —— 这是与「输出没解析出来」唯一的分界
+  eq(j.parsed, true, "弃权：解析是成功的");
+  eq("parseError" in j, false, "弃权：不该有 parseError");
+  eq(j.modelOutput, '{"cuts":[],"evidence":[]}', "弃权：模型原文可读");
 });
 
 Deno.test("模型给了切点但证据校验把它丢掉：响应里要看得见（§3.2 的整条理由）", async () => {
@@ -203,9 +210,14 @@ Deno.test("模型给了切点但证据校验把它丢掉：响应里要看得见
     [{ page: 4, reason: "evidence-unsupported", evidence: "Oboe I in C" }],
     "丢在哪一步、它抄的是什么",
   );
+  // 第三种形态：输出**解析成功**、切点被校验丢掉 —— `parsed` 为 true 而 `rejected` 非空，
+  // 与「真弃权」（parsed true、rejected 空）和「没解析出来」（parsed false）都能分开
+  eq(j.parsed, true, "被丢：输出本身解析成功");
+  eq("parseError" in j, false, "被丢：不是解析错误");
+  eq(j.modelOutput, '{"cuts":[4],"evidence":["Oboe I in C"]}', "被丢：模型原文可读");
 });
 
-Deno.test("模型输出不是合法 JSON：走「不切」而不是报错", async () => {
+Deno.test("模型输出不是合法 JSON：走「不切」而不是报错，但必须能分辨出来", async () => {
   reset(() =>
     new Response(JSON.stringify({ choices: [{ message: { content: "这不是 JSON" } }] }), {
       status: 200,
@@ -215,6 +227,48 @@ Deno.test("模型输出不是合法 JSON：走「不切」而不是报错", asyn
   const j = await res.json();
   eq(res.status, 200, "截断/非法 JSON 不该让整次调用失败");
   eq(j.cuts, [], "退化成不切");
+  // ⚠️ 与「真弃权」的**唯一**分界：弃权是 parsed=true、cuts 为空；
+  // 这里是 parsed=false —— 若把解析失败当成弃权（或 parsed 恒 true），下面两条必须红。
+  eq(j.parsed, false, "解析失败要如实回传");
+  eq(
+    typeof j.parseError === "string" && j.parseError.includes("不是合法 JSON"),
+    true,
+    "失败原因要能读（实际 " + JSON.stringify(j.parseError) + "）",
+  );
+  eq(j.modelOutput, "这不是 JSON", "模型原文原样回传（这就是排查要看的）");
+  eq(j.rawCuts, [], "没解析出来时 rawCuts 是空的（与弃权同形，所以需要 parsed 区分）");
+  eq(j.rejected, [], "没解析出来时没有丢弃记录");
+});
+
+Deno.test("合法 JSON 但结构不对：同样算「没解析出来」，不算弃权", async () => {
+  // `response_format: json_object` 保证的是「是 JSON」，不保证是我们那个对象形状。
+  // 这类输出（`{"foo":1}` / 数组）的 cuts 也是空的 —— 若算作 parsed=true，
+  // 就会再一次与「模型明确弃权」同形。
+  for (const content of ["[]", '{"foo":1}', '"字符串"', "null"]) {
+    reset(() =>
+      new Response(JSON.stringify({ choices: [{ message: { content } }] }), { status: 200 })
+    );
+    const j = await (await post({ pages: PAGES, pageCount: 4 })).json();
+    eq(j.cuts, [], `「${content}」退化成不切`);
+    eq(j.parsed, false, `「${content}」不能被当成弃权`);
+    eq(typeof j.parseError === "string" && j.parseError.length > 0, true, `「${content}」要有原因`);
+    eq(j.modelOutput, content, `「${content}」原文要回传`);
+  }
+});
+
+Deno.test("模型原文超过上限会截断，并在值里标明原文长度", async () => {
+  // 截断本身是契约的一部分：调用方要能看出「这不是完整原文」而不是以为模型只说了这么多。
+  const long = "x".repeat(5000) + "这不是 JSON";
+  reset(() =>
+    new Response(JSON.stringify({ choices: [{ message: { content: long } }] }), { status: 200 })
+  );
+  const j = await (await post({ pages: PAGES, pageCount: 4 })).json();
+  eq(j.parsed, false, "超长且非法 JSON");
+  eq(j.modelOutput.includes("…（已截断，原文 " + long.length + " 字符）"), true, "截断标记");
+  eq(j.modelOutput.length < long.length, true, "确实短于原文");
+  eq(j.modelOutput.length <= 2000, true, "字段值（含标记）不超过上限");
+  // 前缀仍然是原文的开头（不是被改写过的内容）
+  eq(j.modelOutput.slice(0, 100), "x".repeat(100), "截断保留原文开头");
 });
 
 Deno.test("请求体校验：契约违规一律 400，不做宽容修正", async () => {

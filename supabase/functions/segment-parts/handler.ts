@@ -25,6 +25,60 @@ const MAX_PAGE_TEXT_CHARS = 200;
 export const retry = createRetry();
 
 /**
+ * 响应里回传**模型原文**的上限（字符）。
+ *
+ * 排查链路：`rawCuts: []` 过去既可能是模型明确弃权（`{"cuts": []}`），也可能是
+ * 输出压根没解析出来（非法 JSON / 结构不对）—— 这两种情况的修法相反，而 API 层同形。
+ * 回传原文就是为了让调用方**直接看见模型说了什么**。
+ *
+ * 它是排查字段，不是契约数据：超长就截断，并在**值本身**末尾标出「已截断」与原文长度
+ * （不另加 truncated 布尔 —— 读者看到标记即知，字段越少越好）。标记占用同一个预算，
+ * 所以字段值**整体**不超过这个上限。
+ */
+const MAX_MODEL_OUTPUT_CHARS = 2000;
+
+function clipModelOutput(text: string): string {
+  if (text.length <= MAX_MODEL_OUTPUT_CHARS) return text;
+  const suffix = `…（已截断，原文 ${text.length} 字符）`;
+  return text.slice(0, MAX_MODEL_OUTPUT_CHARS - suffix.length) + suffix;
+}
+
+/**
+ * 模型输出的解析结果。
+ *
+ * ⚠️ `parsed` 的语义是「**能当作一份分段计划来读**」，不是「JSON.parse 没抛」：
+ * `{"foo": 1}` / `[...]` / `"字符串"` 这类 JSON 合法但结构不对的输出，其 `cuts`
+ * 同样是空的，若算作 parsed，就会与「模型明确弃权」（`{"cuts": []}`）在 API 层
+ * 再次同形 —— 而消灭这个二义正是这些字段存在的理由。
+ */
+interface ParsedModelOutput {
+  parsed: boolean;
+  value: unknown;
+  /** 只在 `parsed === false` 时给出：一句话说清卡在哪一步 */
+  parseError?: string;
+}
+
+function parseModelOutput(responseText: string): ParsedModelOutput {
+  if (!responseText) {
+    return { parsed: false, value: null, parseError: "模型没有返回文本内容（content 缺失或为空）" };
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(responseText);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return { parsed: false, value: null, parseError: `模型输出不是合法 JSON：${detail}` };
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { parsed: false, value, parseError: "模型输出是合法 JSON，但不是对象" };
+  }
+  if (!Array.isArray((value as Record<string, unknown>).cuts)) {
+    return { parsed: false, value, parseError: "模型输出的对象里没有 cuts 数组" };
+  }
+  return { parsed: true, value };
+}
+
+/**
  * 请求体校验。**契约违规一律 400，不做「宽容修正」。**
  *
  * ⚠️ 尤其是「页号必须严格升序且不重复」这一条：页号是切点的坐标系，
@@ -198,17 +252,14 @@ export async function handler(req: Request): Promise<Response> {
     if (outcome.ok) {
       const rawContent = outcome.data.choices?.[0]?.message?.content;
       // `?.` 只对 null/undefined 短路：上游若把 content 回成数字，`123?.trim()` 会直接抛
-      const responseText = typeof rawContent === 'string' ? rawContent.trim() : '';
+      const modelOutput = typeof rawContent === 'string' ? rawContent : '';
+      // 解析用 trim 后的文本；回传给调用方的是**原文**（上面的 modelOutput）
+      const responseText = modelOutput.trim();
 
       // 解析失败**不弃权整份请求**，而是走「不切」—— 与 parseSegmentPlan 的默认一致：
       // 不切 = 退回今天的行为（整份当一个声部），用户还能人工改。
-      let parsed: unknown = null;
-      try {
-        parsed = JSON.parse(responseText);
-      } catch {
-        parsed = null;
-      }
-      const plan = parseSegmentPlan(parsed, pages);
+      const parsedOutput = parseModelOutput(responseText);
+      const plan = parseSegmentPlan(parsedOutput.value, pages);
 
       // 平铺在顶层（同 llm-analyze 的约定：前端读 data.cuts）
       //
@@ -216,6 +267,12 @@ export async function handler(req: Request): Promise<Response> {
       // `rawCuts` / `rejected` 是**只加不改**的排查字段：模型弃权时两个都是空，
       // 「模型给了切点但被丢掉」时 `rawCuts` 非空、`rejected` 里逐条写着理由 ——
       // 这两种情况过去在 API 层长得一模一样（见 `segment.ts` 的 REJECTION_REASONS）。
+      //
+      // `modelOutput` / `parsed` / `parseError` 同样**只加不改**，补上剩下那一半二义：
+      //  · `parsed === true` 且 `cuts` 为空、`rejected` 为空 ⇒ 模型明确弃权；
+      //  · `parsed === false` ⇒ 输出没解析出来（原文在 `modelOutput`，原因在 `parseError`）；
+      //  · `parsed === true` 且 `rejected` 非空 ⇒ 切点被校验丢掉（逐条理由在 `rejected`）。
+      // 只看 `rawCuts: []` 时前两种同形 —— 这正是这些字段存在的理由。
       return json({
         success: true,
         source: 'llm',
@@ -223,6 +280,10 @@ export async function handler(req: Request): Promise<Response> {
         // 段区间由**同一份** plan 算出来，省得调用方各写一遍（那是「同一件事两处实现」的起点）
         ranges: planToRanges(plan, pageCount),
         pageCount,
+        // 模型原文（超过 MAX_MODEL_OUTPUT_CHARS 时在值里标明已截断）
+        modelOutput: clipModelOutput(modelOutput),
+        parsed: parsedOutput.parsed,
+        ...(parsedOutput.parseError === undefined ? {} : { parseError: parsedOutput.parseError }),
       }, 200, CORS_HEADERS);
     }
 
