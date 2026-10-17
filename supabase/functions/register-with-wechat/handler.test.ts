@@ -127,7 +127,7 @@ const reset = () => {
   tokenOk = true
 }
 
-const register = () =>
+const register = (over: Record<string, unknown> = {}) =>
   handler(
     new Request('http://x/', {
       method: 'POST',
@@ -137,11 +137,28 @@ const register = () =>
         email: USER_EMAIL,
         instrument: '小提琴',
         college: '元培',
-        join_date: '2024-09-01',
+        join_date: '2024秋',
         is_in_orchestra: true,
+        ...over,
       }),
     }),
   )
+
+Deno.test('join_date 格式：服务端先校验，非法一律 400（不走到建号那一步）', async () => {
+  for (const bad of ['2024-09-01', '2024夏', '24秋', 'Fall 2024', '2024 秋']) {
+    reset()
+    const res = await register({ join_date: bad })
+    assertEquals(res.status, 400, `${bad} 应回 400`)
+    assertEquals((await res.json() as { error: string }).error, 'invalid join_date')
+    // 负向断言的同伴：合法值在同一条路径上是放行的（下面那组）
+    assertEquals(recorded.length, 0, `${bad} 不该发起任何上游请求（code2session / 建号都不该跑）`)
+  }
+  for (const ok of ['2024秋', '2024春']) {
+    reset()
+    const res = await register({ join_date: ok })
+    assertEquals(res.status, 200, `${ok} 应放行`)
+  }
+})
 
 /**
  * 「写到**某个**账号身上」的请求 —— 正是认错人时会被写歪的那两处
