@@ -241,6 +241,15 @@ Deno.test("每条丢弃理由各一条用例（表驱动 + 完整性自检）", 
       cuts: [],
     },
     {
+      reason: "no-instrument-before",
+      parsed: {
+        candidates: [
+          { page: 4, reason: "标题块", confidence: 0.9, evidence: "Corno II in F", prevInstrument: null },
+        ],
+      },
+      cuts: [],
+    },
+    {
       reason: "low-confidence",
       parsed: { candidates: [{ page: 4, reason: "标题块", confidence: 0.3, evidence: "Corno II in F" }] },
       cuts: [],
