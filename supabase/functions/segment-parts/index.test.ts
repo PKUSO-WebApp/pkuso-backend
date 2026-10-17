@@ -134,12 +134,15 @@ Deno.test("prompt 的判据必须是「首页才有的标题块」，并排除�
   eq(lastPrompt.length > 300, true, "prompt 正文确实取到了");
 });
 
-Deno.test("prompt 规则 1：p1 是第 1 份的开头，不是边界", async () => {
+Deno.test("prompt 规则 1：第 1 页是**范例**，不是要排除的干扰项", async () => {
   reset(() => new Response(OK_BODY, { status: 200 }));
   await post({ pages: PAGES, pageCount: 4 });
-  // 「不要把 p1 写进 cuts」是 parseSegmentPlan 的硬约束，丢了会多出一堆被丢弃的切点
-  eq(lastPrompt.includes("不要包含第 1 页"), true, "要点明 p1 不属于 cuts");
-  eq(lastPrompt.includes("它必然是第 1 份的开头，不是边界"), true, "要说清 p1 为什么不是边界");
+  // 只说「p1 是开头」会把唯一的正例当成干扰项；要点明它的形状就是首页的范例
+  eq(lastPrompt.includes("它必然是第 1 份的开头"), false, "旧措辞必须消失");
+  eq(lastPrompt.includes("第 1 页就是第 1 份的首页"), true, "要点明 p1 就是第 1 份的首页");
+  eq(lastPrompt.includes("形状与第 1 页相同的后续页"), true, "要给出「同形状 ⇒ 新的一份」这条推论");
+  // 「不要把 p1 写进 cuts」这条不能丢：它是 parseSegmentPlan 的硬约束，丢了会多出一堆被丢弃的切点
+  eq(lastPrompt.includes("不要写进 cuts"), true, "p1 仍然不该写进 cuts");
   eq(lastPrompt.length > 300, true, "自检：prompt 正文确实取到了");
 });
 
