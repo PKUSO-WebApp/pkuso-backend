@@ -68,6 +68,10 @@ export async function handler(req: Request): Promise<Response> {
   if (!instrument) return json({ error: 'missing instrument' }, 400)
   if (!college) return json({ error: 'missing college' }, 400)
   if (!joinDate) return json({ error: 'missing join_date' }, 400)
+  // 与 `profiles_join_date_check` 同一条判据（DB 只接受 `YYYY春` / `YYYY秋`）。
+  // 格式错必须在这里回 400：再往后走，它会在**第 4 步**（auth user 已经建好之后）
+  // 被约束拒掉 —— 那正是孤儿账号的来源（2026-10-10 那次）。
+  if (!/^\d{4}(春|秋)$/.test(joinDate)) return json({ error: 'invalid join_date' }, 400)
 
   // 1. code2session：code 换 openid
   const wxUrl =
