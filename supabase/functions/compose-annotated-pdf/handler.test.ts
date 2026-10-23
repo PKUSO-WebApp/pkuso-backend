@@ -1,18 +1,17 @@
 import { assert, assertEquals } from "https://deno.land/std@0.168.0/testing/asserts.ts";
 import { PDFArray, PDFDocument } from "npm:pdf-lib@1.17.1";
+import { annotatedPath, handler } from "./handler.ts";
+import { MAX_TOTAL_STROKES } from "../_shared/pdf-annotations/compose.ts";
 import {
-  annotatedPath,
   contentRangeTotal,
   DEFAULT_MAX_PDF_BYTES,
-  handler,
   hasAnyStroke,
   isFileId,
   MAX_ANNOTATION_ROWS,
   OUTPUT_BUCKET,
   pdfSizeLimit,
   SOURCE_BUCKET,
-} from "./handler.ts";
-import { MAX_TOTAL_STROKES } from "./compose.ts";
+} from "../_shared/pdf-annotations/export.ts";
 import {
   assertResponseHeaders,
   CORS_JSON_HEADERS,
