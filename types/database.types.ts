@@ -715,6 +715,48 @@ export type Database = {
         }
         Relationships: []
       }
+      rehearsal_repertoire: {
+        Row: {
+          created_at: string
+          id: string
+          rehearsal_id: number
+          sheet_music_id: string | null
+          sort_order: number
+          title: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          rehearsal_id: number
+          sheet_music_id?: string | null
+          sort_order?: number
+          title: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          rehearsal_id?: number
+          sheet_music_id?: string | null
+          sort_order?: number
+          title?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "rehearsal_repertoire_rehearsal_id_fkey"
+            columns: ["rehearsal_id"]
+            isOneToOne: false
+            referencedRelation: "rehearsals"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "rehearsal_repertoire_sheet_music_id_fkey"
+            columns: ["sheet_music_id"]
+            isOneToOne: false
+            referencedRelation: "sheet_music"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       rehearsals: {
         Row: {
           checkin_lat: number | null
@@ -1559,6 +1601,13 @@ export type Database = {
         Returns: boolean
       }
       cleanup_client_error_logs: { Args: never; Returns: number }
+      compute_rehearsal_attendance: {
+        Args: { p_rehearsal_id: number }
+        Returns: {
+          status: Database["public"]["Enums"]["attendanceStatus"]
+          user_id: string
+        }[]
+      }
       create_attendance_change_request: {
         Args: {
           p_reason?: string
