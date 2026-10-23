@@ -10,7 +10,7 @@ export type Database = {
   // Allows to automatically instantiate createClient with right options
   // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
   __InternalSupabase: {
-    PostgrestVersion: "14.15"
+    PostgrestVersion: "14.17"
   }
   public: {
     Tables: {
@@ -212,6 +212,63 @@ export type Database = {
           year?: number
         }
         Relationships: []
+      }
+      instrument_principals: {
+        Row: {
+          assigned_at: string
+          assigned_by: string | null
+          instrument: string
+          principal_id: string
+        }
+        Insert: {
+          assigned_at?: string
+          assigned_by?: string | null
+          instrument: string
+          principal_id: string
+        }
+        Update: {
+          assigned_at?: string
+          assigned_by?: string | null
+          instrument?: string
+          principal_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "instrument_principals_assigned_by_fkey"
+            columns: ["assigned_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "instrument_principals_assigned_by_fkey"
+            columns: ["assigned_by"]
+            isOneToOne: false
+            referencedRelation: "profiles_roster"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "instrument_principals_instrument_fkey"
+            columns: ["instrument"]
+            isOneToOne: true
+            referencedRelation: "sections"
+            referencedColumns: ["name"]
+          },
+          {
+            foreignKeyName: "instrument_principals_principal_id_fkey"
+            columns: ["principal_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "instrument_principals_principal_id_fkey"
+            columns: ["principal_id"]
+            isOneToOne: false
+            referencedRelation: "profiles_roster"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       leave_requests: {
         Row: {
@@ -418,6 +475,56 @@ export type Database = {
           },
         ]
       }
+      president_capabilities: {
+        Row: {
+          capability: string
+          granted_at: string
+          granted_by: string | null
+          user_id: string
+        }
+        Insert: {
+          capability: string
+          granted_at?: string
+          granted_by?: string | null
+          user_id: string
+        }
+        Update: {
+          capability?: string
+          granted_at?: string
+          granted_by?: string | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "president_capabilities_granted_by_fkey"
+            columns: ["granted_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "president_capabilities_granted_by_fkey"
+            columns: ["granted_by"]
+            isOneToOne: false
+            referencedRelation: "profiles_roster"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "president_capabilities_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "president_capabilities_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles_roster"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       profiles: {
         Row: {
           avatar_url: string | null
@@ -432,6 +539,7 @@ export type Database = {
           id: string
           instrument: string | null
           is_in_orchestra: boolean | null
+          is_principal: boolean
           is_section_leader: boolean
           join_date: string | null
           phone_number: string | null
@@ -454,6 +562,7 @@ export type Database = {
           id: string
           instrument?: string | null
           is_in_orchestra?: boolean | null
+          is_principal?: boolean
           is_section_leader?: boolean
           join_date?: string | null
           phone_number?: string | null
@@ -476,6 +585,7 @@ export type Database = {
           id?: string
           instrument?: string | null
           is_in_orchestra?: boolean | null
+          is_principal?: boolean
           is_section_leader?: boolean
           join_date?: string | null
           phone_number?: string | null
@@ -721,6 +831,63 @@ export type Database = {
             foreignKeyName: "section_group_members_member_name_fkey"
             columns: ["member_name"]
             isOneToOne: false
+            referencedRelation: "sections"
+            referencedColumns: ["name"]
+          },
+        ]
+      }
+      section_leaders: {
+        Row: {
+          assigned_at: string
+          assigned_by: string | null
+          leader_id: string
+          section: string
+        }
+        Insert: {
+          assigned_at?: string
+          assigned_by?: string | null
+          leader_id: string
+          section: string
+        }
+        Update: {
+          assigned_at?: string
+          assigned_by?: string | null
+          leader_id?: string
+          section?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "section_leaders_assigned_by_fkey"
+            columns: ["assigned_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "section_leaders_assigned_by_fkey"
+            columns: ["assigned_by"]
+            isOneToOne: false
+            referencedRelation: "profiles_roster"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "section_leaders_leader_id_fkey"
+            columns: ["leader_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "section_leaders_leader_id_fkey"
+            columns: ["leader_id"]
+            isOneToOne: false
+            referencedRelation: "profiles_roster"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "section_leaders_section_fkey"
+            columns: ["section"]
+            isOneToOne: true
             referencedRelation: "sections"
             referencedColumns: ["name"]
           },
@@ -1145,6 +1312,7 @@ export type Database = {
           id: string | null
           instrument: string | null
           is_in_orchestra: boolean | null
+          is_principal: boolean | null
           is_section_leader: boolean | null
           join_date: string | null
           phone_number: string | null
@@ -1164,6 +1332,7 @@ export type Database = {
           id?: string | null
           instrument?: string | null
           is_in_orchestra?: boolean | null
+          is_principal?: boolean | null
           is_section_leader?: boolean | null
           join_date?: string | null
           phone_number?: never
@@ -1183,6 +1352,7 @@ export type Database = {
           id?: string | null
           instrument?: string | null
           is_in_orchestra?: boolean | null
+          is_principal?: boolean | null
           is_section_leader?: boolean | null
           join_date?: string | null
           phone_number?: never
@@ -1193,9 +1363,54 @@ export type Database = {
       }
     }
     Functions: {
+      admin_grant_capability: {
+        Args: { p_actor_id: string; p_capability: string; p_user_id: string }
+        Returns: undefined
+      }
+      admin_remove_principal: {
+        Args: { p_actor_id: string; p_instrument: string }
+        Returns: undefined
+      }
+      admin_remove_section_leader: {
+        Args: { p_actor_id: string; p_section: string }
+        Returns: undefined
+      }
+      admin_revoke_capability: {
+        Args: { p_actor_id: string; p_capability: string; p_user_id: string }
+        Returns: undefined
+      }
+      admin_set_principal: {
+        Args: {
+          p_actor_id: string
+          p_instrument: string
+          p_principal_id: string
+        }
+        Returns: undefined
+      }
+      admin_set_section_leader: {
+        Args: { p_actor_id: string; p_leader_id: string; p_section: string }
+        Returns: undefined
+      }
       archive_sheet_music_annotation: {
         Args: { p_file_id: string; p_page: number; p_strokes: Json }
         Returns: undefined
+      }
+      assert_admin_actor: { Args: { p_actor_id: string }; Returns: undefined }
+      can_manage_member_attendance: {
+        Args: { p_member: string }
+        Returns: boolean
+      }
+      can_manage_rehearsal_attendance: {
+        Args: { p_rehearsal_id: number }
+        Returns: boolean
+      }
+      can_view_member_attendance: {
+        Args: { p_member: string }
+        Returns: boolean
+      }
+      can_view_rehearsal_attendance: {
+        Args: { p_rehearsal_id: number }
+        Returns: boolean
       }
       cancel_leave_on_sign_in: {
         Args: { p_rehearsal_id: number }
@@ -1248,8 +1463,10 @@ export type Database = {
           trusted: boolean
         }[]
       }
+      has_capability: { Args: { p_capability: string }; Returns: boolean }
       is_admin: { Args: never; Returns: boolean }
       is_valid_sub_parts: { Args: { nums: number[] }; Returns: boolean }
+      led_sections: { Args: { p_leader: string }; Returns: string[] }
       list_my_devices: {
         Args: never
         Returns: {
@@ -1262,6 +1479,19 @@ export type Database = {
         }[]
       }
       log_client_errors: { Args: { rows: Json }; Returns: undefined }
+      my_capabilities: { Args: never; Returns: string[] }
+      my_leadership_roles: {
+        Args: never
+        Returns: {
+          role: string
+          scope: string
+        }[]
+      }
+      my_managed_sections: { Args: never; Returns: string[] }
+      principal_instruments: {
+        Args: { p_principal: string }
+        Returns: string[]
+      }
       push_sheet_music_annotation: {
         Args: {
           p_expected_version?: string
