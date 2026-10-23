@@ -755,6 +755,13 @@ export type Database = {
             referencedRelation: "sheet_music"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "rehearsal_repertoire_sheet_music_id_fkey"
+            columns: ["sheet_music_id"]
+            isOneToOne: false
+            referencedRelation: "sheet_music_shared_score_files"
+            referencedColumns: ["score_id"]
+          },
         ]
       }
       rehearsals: {
@@ -1158,6 +1165,13 @@ export type Database = {
             referencedRelation: "sheet_music_files"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "sheet_music_annotation_history_file_id_fkey"
+            columns: ["file_id"]
+            isOneToOne: false
+            referencedRelation: "sheet_music_shared_score_files"
+            referencedColumns: ["file_id"]
+          },
         ]
       }
       sheet_music_annotations: {
@@ -1192,6 +1206,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "sheet_music_files"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sheet_music_annotations_file_id_fkey"
+            columns: ["file_id"]
+            isOneToOne: false
+            referencedRelation: "sheet_music_shared_score_files"
+            referencedColumns: ["file_id"]
           },
         ]
       }
@@ -1344,6 +1365,128 @@ export type Database = {
             columns: ["sheet_music_id"]
             isOneToOne: false
             referencedRelation: "sheet_music"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sheet_music_parts_sheet_music_id_fkey"
+            columns: ["sheet_music_id"]
+            isOneToOne: false
+            referencedRelation: "sheet_music_shared_score_files"
+            referencedColumns: ["score_id"]
+          },
+        ]
+      }
+      sheet_music_shared_annotation_history: {
+        Row: {
+          file_id: string
+          page: number
+          replaced_at: string
+          replaced_by: string | null
+          strokes: Json
+          version: string
+        }
+        Insert: {
+          file_id: string
+          page: number
+          replaced_at?: string
+          replaced_by?: string | null
+          strokes: Json
+          version?: string
+        }
+        Update: {
+          file_id?: string
+          page?: number
+          replaced_at?: string
+          replaced_by?: string | null
+          strokes?: Json
+          version?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "sheet_music_shared_annotation_history_file_id_fkey"
+            columns: ["file_id"]
+            isOneToOne: false
+            referencedRelation: "sheet_music_files"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sheet_music_shared_annotation_history_file_id_fkey"
+            columns: ["file_id"]
+            isOneToOne: false
+            referencedRelation: "sheet_music_shared_score_files"
+            referencedColumns: ["file_id"]
+          },
+          {
+            foreignKeyName: "sheet_music_shared_annotation_history_replaced_by_fkey"
+            columns: ["replaced_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sheet_music_shared_annotation_history_replaced_by_fkey"
+            columns: ["replaced_by"]
+            isOneToOne: false
+            referencedRelation: "profiles_roster"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      sheet_music_shared_annotations: {
+        Row: {
+          file_id: string
+          page: number
+          source_page_count: number | null
+          strokes: Json
+          updated_at: string
+          updated_by: string | null
+          version: string | null
+        }
+        Insert: {
+          file_id: string
+          page: number
+          source_page_count?: number | null
+          strokes?: Json
+          updated_at?: string
+          updated_by?: string | null
+          version?: string | null
+        }
+        Update: {
+          file_id?: string
+          page?: number
+          source_page_count?: number | null
+          strokes?: Json
+          updated_at?: string
+          updated_by?: string | null
+          version?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "sheet_music_shared_annotations_file_id_fkey"
+            columns: ["file_id"]
+            isOneToOne: false
+            referencedRelation: "sheet_music_files"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sheet_music_shared_annotations_file_id_fkey"
+            columns: ["file_id"]
+            isOneToOne: false
+            referencedRelation: "sheet_music_shared_score_files"
+            referencedColumns: ["file_id"]
+          },
+          {
+            foreignKeyName: "sheet_music_shared_annotations_updated_by_fkey"
+            columns: ["updated_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sheet_music_shared_annotations_updated_by_fkey"
+            columns: ["updated_by"]
+            isOneToOne: false
+            referencedRelation: "profiles_roster"
             referencedColumns: ["id"]
           },
         ]
@@ -1521,6 +1664,22 @@ export type Database = {
         }
         Relationships: []
       }
+      sheet_music_shared_score_files: {
+        Row: {
+          annotated_pages: number | null
+          file_id: string | null
+          file_instrument: string | null
+          file_name: string | null
+          page_count: number | null
+          score_id: string | null
+          section: string | null
+          source_page_count: number | null
+          sub_parts: number[] | null
+          title: string | null
+          updated_at: string | null
+        }
+        Relationships: []
+      }
     }
     Functions: {
       admin_decide_attendance_change_request: {
@@ -1561,11 +1720,19 @@ export type Database = {
         Args: { p_actor_id: string; p_leader_id: string; p_section: string }
         Returns: undefined
       }
+      archive_shared_sheet_music_annotation: {
+        Args: { p_file_id: string; p_page: number; p_strokes: Json }
+        Returns: undefined
+      }
       archive_sheet_music_annotation: {
         Args: { p_file_id: string; p_page: number; p_strokes: Json }
         Returns: undefined
       }
       assert_admin_actor: { Args: { p_actor_id: string }; Returns: undefined }
+      can_edit_shared_annotation: {
+        Args: { p_file_id: string }
+        Returns: boolean
+      }
       can_manage_member_attendance: {
         Args: { p_member: string }
         Returns: boolean
@@ -1696,6 +1863,19 @@ export type Database = {
         Args: { p_principal: string }
         Returns: string[]
       }
+      push_shared_sheet_music_annotation: {
+        Args: {
+          p_expected_version?: string
+          p_file_id: string
+          p_page: number
+          p_strokes: Json
+        }
+        Returns: {
+          ok: boolean
+          strokes: Json
+          version: string
+        }[]
+      }
       push_sheet_music_annotation: {
         Args: {
           p_expected_version?: string
@@ -1761,6 +1941,10 @@ export type Database = {
           p_page: number
           p_user_id: string
         }
+        Returns: undefined
+      }
+      trim_sheet_music_shared_annotation_history: {
+        Args: { p_file_id: string; p_keep?: number; p_page: number }
         Returns: undefined
       }
     }
