@@ -1720,7 +1720,11 @@ export type Database = {
         | "rejected"
         | "withdrawn"
         | "canceled"
-      notificationCategory: "attendance" | "activity" | "system"
+      notificationCategory:
+        | "attendance"
+        | "activity"
+        | "system"
+        | "section_leave"
       postType: "ensemble" | "gathering"
       profileRole: "member" | "admin" | "score_manager"
       profileStatus: "pending" | "approved" | "rejected"
@@ -1859,7 +1863,12 @@ export const Constants = {
       ],
       attendanceStatus: ["present", "late", "absent", "excused", "exempt"],
       leaveStatus: ["pending", "approved", "rejected", "withdrawn", "canceled"],
-      notificationCategory: ["attendance", "activity", "system"],
+      notificationCategory: [
+        "attendance",
+        "activity",
+        "system",
+        "section_leave",
+      ],
       postType: ["ensemble", "gathering"],
       profileRole: ["member", "admin", "score_manager"],
       profileStatus: ["pending", "approved", "rejected"],
