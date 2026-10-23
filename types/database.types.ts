@@ -10,7 +10,7 @@ export type Database = {
   // Allows to automatically instantiate createClient with right options
   // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
   __InternalSupabase: {
-    PostgrestVersion: "14.15"
+    PostgrestVersion: "14.17"
   }
   public: {
     Tables: {
@@ -692,6 +692,66 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      section_group_members: {
+        Row: {
+          group_name: string
+          member_name: string
+          sort_order: number
+        }
+        Insert: {
+          group_name: string
+          member_name: string
+          sort_order: number
+        }
+        Update: {
+          group_name?: string
+          member_name?: string
+          sort_order?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "section_group_members_group_name_fkey"
+            columns: ["group_name"]
+            isOneToOne: false
+            referencedRelation: "sections"
+            referencedColumns: ["name"]
+          },
+          {
+            foreignKeyName: "section_group_members_member_name_fkey"
+            columns: ["member_name"]
+            isOneToOne: false
+            referencedRelation: "sections"
+            referencedColumns: ["name"]
+          },
+        ]
+      }
+      sections: {
+        Row: {
+          can_lead: boolean
+          can_principal: boolean
+          created_at: string
+          kind: string
+          name: string
+          sort_order: number
+        }
+        Insert: {
+          can_lead?: boolean
+          can_principal?: boolean
+          created_at?: string
+          kind: string
+          name: string
+          sort_order: number
+        }
+        Update: {
+          can_lead?: boolean
+          can_principal?: boolean
+          created_at?: string
+          kind?: string
+          name?: string
+          sort_order?: number
+        }
+        Relationships: []
       }
       sheet_music: {
         Row: {
