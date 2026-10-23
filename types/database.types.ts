@@ -56,12 +56,112 @@ export type Database = {
         }
         Relationships: []
       }
+      attendance_change_requests: {
+        Row: {
+          created_at: string
+          decided_at: string | null
+          decided_by: string | null
+          from_status: Database["public"]["Enums"]["attendanceStatus"]
+          id: string
+          reason: string | null
+          rehearsal_id: number
+          reject_reason: string | null
+          requested_by: string
+          status: Database["public"]["Enums"]["attendanceChangeRequestStatus"]
+          target_user_id: string
+          to_status: Database["public"]["Enums"]["attendanceStatus"]
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          decided_at?: string | null
+          decided_by?: string | null
+          from_status: Database["public"]["Enums"]["attendanceStatus"]
+          id?: string
+          reason?: string | null
+          rehearsal_id: number
+          reject_reason?: string | null
+          requested_by: string
+          status?: Database["public"]["Enums"]["attendanceChangeRequestStatus"]
+          target_user_id: string
+          to_status: Database["public"]["Enums"]["attendanceStatus"]
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          decided_at?: string | null
+          decided_by?: string | null
+          from_status?: Database["public"]["Enums"]["attendanceStatus"]
+          id?: string
+          reason?: string | null
+          rehearsal_id?: number
+          reject_reason?: string | null
+          requested_by?: string
+          status?: Database["public"]["Enums"]["attendanceChangeRequestStatus"]
+          target_user_id?: string
+          to_status?: Database["public"]["Enums"]["attendanceStatus"]
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "attendance_change_requests_decided_by_fkey"
+            columns: ["decided_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "attendance_change_requests_decided_by_fkey"
+            columns: ["decided_by"]
+            isOneToOne: false
+            referencedRelation: "profiles_roster"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "attendance_change_requests_rehearsal_id_fkey"
+            columns: ["rehearsal_id"]
+            isOneToOne: false
+            referencedRelation: "rehearsals"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "attendance_change_requests_requested_by_fkey"
+            columns: ["requested_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "attendance_change_requests_requested_by_fkey"
+            columns: ["requested_by"]
+            isOneToOne: false
+            referencedRelation: "profiles_roster"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "attendance_change_requests_target_user_id_fkey"
+            columns: ["target_user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "attendance_change_requests_target_user_id_fkey"
+            columns: ["target_user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles_roster"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       attendances: {
         Row: {
           id: number
           rehearsal_id: number
           sign_in_time: string | null
           status: Database["public"]["Enums"]["attendanceStatus"] | null
+          updated_at: string | null
+          updated_by: string | null
           user_id: string
         }
         Insert: {
@@ -69,6 +169,8 @@ export type Database = {
           rehearsal_id: number
           sign_in_time?: string | null
           status?: Database["public"]["Enums"]["attendanceStatus"] | null
+          updated_at?: string | null
+          updated_by?: string | null
           user_id: string
         }
         Update: {
@@ -76,6 +178,8 @@ export type Database = {
           rehearsal_id?: number
           sign_in_time?: string | null
           status?: Database["public"]["Enums"]["attendanceStatus"] | null
+          updated_at?: string | null
+          updated_by?: string | null
           user_id?: string
         }
         Relationships: [
@@ -84,6 +188,20 @@ export type Database = {
             columns: ["rehearsal_id"]
             isOneToOne: false
             referencedRelation: "rehearsals"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "attendances_updated_by_fkey"
+            columns: ["updated_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "attendances_updated_by_fkey"
+            columns: ["updated_by"]
+            isOneToOne: false
+            referencedRelation: "profiles_roster"
             referencedColumns: ["id"]
           },
           {
@@ -1363,6 +1481,16 @@ export type Database = {
       }
     }
     Functions: {
+      admin_decide_attendance_change_request: {
+        Args: {
+          p_actor_id: string
+          p_approve: boolean
+          p_force: boolean
+          p_reject_reason: string
+          p_request_id: string
+        }
+        Returns: Json
+      }
       admin_grant_capability: {
         Args: { p_actor_id: string; p_capability: string; p_user_id: string }
         Returns: undefined
@@ -1412,6 +1540,10 @@ export type Database = {
         Args: { p_rehearsal_id: number }
         Returns: boolean
       }
+      cancel_attendance_change_request: {
+        Args: { p_request_id: string }
+        Returns: undefined
+      }
       cancel_leave_on_sign_in: {
         Args: { p_rehearsal_id: number }
         Returns: {
@@ -1427,6 +1559,15 @@ export type Database = {
         Returns: boolean
       }
       cleanup_client_error_logs: { Args: never; Returns: number }
+      create_attendance_change_request: {
+        Args: {
+          p_reason?: string
+          p_rehearsal_id: number
+          p_target_user_id: string
+          p_to_status: Database["public"]["Enums"]["attendanceStatus"]
+        }
+        Returns: string
+      }
       delete_device: {
         Args: { p_device_id: string; p_self_device_id: string }
         Returns: undefined
@@ -1461,6 +1602,16 @@ export type Database = {
           last_seen_at: string
           token: string
           trusted: boolean
+        }[]
+      }
+      get_section_leave_requests: {
+        Args: { p_include_canceled?: boolean; p_rehearsal_id?: number }
+        Returns: {
+          created_at: string
+          rehearsal_id: number
+          request_id: string
+          status: Database["public"]["Enums"]["leaveStatus"]
+          user_id: string
         }[]
       }
       has_capability: { Args: { p_capability: string }; Returns: boolean }
@@ -1557,6 +1708,11 @@ export type Database = {
       }
     }
     Enums: {
+      attendanceChangeRequestStatus:
+        | "pending"
+        | "approved"
+        | "rejected"
+        | "canceled"
       attendanceStatus: "present" | "late" | "absent" | "excused" | "exempt"
       leaveStatus:
         | "pending"
@@ -1695,6 +1851,12 @@ export type CompositeTypes<
 export const Constants = {
   public: {
     Enums: {
+      attendanceChangeRequestStatus: [
+        "pending",
+        "approved",
+        "rejected",
+        "canceled",
+      ],
       attendanceStatus: ["present", "late", "absent", "excused", "exempt"],
       leaveStatus: ["pending", "approved", "rejected", "withdrawn", "canceled"],
       notificationCategory: ["attendance", "activity", "system"],
