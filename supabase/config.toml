@@ -47,3 +47,7 @@ verify_jwt = true
 # ⚠️ 死配置：CI 用 `--no-verify-jwt` 部署（见 AGENTS.md 的「本地闸门」一节），
 # 线上这个值不生效。本函数的鉴权由 handler.ts 里的 `requireUser()` 自己做。
 verify_jwt = true
+
+[functions.compose-shared-pdf]
+# 同上：线上不生效，鉴权在 handler.ts 的 requireUser()。
+verify_jwt = true
