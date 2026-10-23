@@ -39,6 +39,10 @@ export async function handler(req: Request): Promise<Response> {
     return json({ error: 'server misconfigured' }, 500)
   }
 
+  // 在解析/校验入参之前就建好：声部校验要用它读 sections，且必须排在
+  // 「创建 auth user」之前 —— 否则非法乐器会留下一个孤儿账号。
+  const admin = adminClient(env)
+
   let code = ''
   let fullName = ''
   let email = ''
@@ -73,6 +77,26 @@ export async function handler(req: Request): Promise<Response> {
   // 被约束拒掉 —— 那正是孤儿账号的来源（2026-10-10 那次）。
   if (!/^\d{4}(春|秋)$/.test(joinDate)) return json({ error: 'invalid join_date' }, 400)
 
+  // 旧版小程序英文环境把「其他」的 i18n label（Other）当值发过来。
+  // 这是**长期兼容层**：旧客户端不一定会升级，别在确认装机量之前删。
+  // 迁移 20261023120100 的 profiles 触发器里也有一份同样的兜底（部署窗口用）。
+  if (instrument.toLowerCase() === 'other') instrument = '其他'
+
+  // 声部必须在字典里（16 个乐器 + 其他）；总谱/未知值一律 400。
+  // 必须在建号之前校验：否则 profiles 触发器会在 auth user 建好之后才拒绝，
+  // 留下孤儿账号（同 join_date 那条注释里的事故）。
+  const { data: sectionRows, error: sectionError } = await admin
+    .from('sections')
+    .select('name, kind')
+  if (sectionError) {
+    console.error('[register-with-wechat] section lookup error', sectionError)
+    return json({ error: 'section lookup failed' }, 500)
+  }
+  const instrumentAllowed = (sectionRows ?? []).some(
+    (s) => s.name === instrument && (s.kind === 'instrument' || s.name === '其他'),
+  )
+  if (!instrumentAllowed) return json({ error: 'unknown instrument' }, 400)
+
   // 1. code2session：code 换 openid
   const wxUrl =
     `https://api.weixin.qq.com/sns/jscode2session?appid=${wechatAppId}` +
@@ -92,8 +116,6 @@ export async function handler(req: Request): Promise<Response> {
     }, 401)
   }
   const openid = wxData.openid
-
-  const admin = adminClient(env)
 
   // 2. 检查 openid 是否已绑定
   const { data: existingProfile, error: lookupError } = await admin

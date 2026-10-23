@@ -42,6 +42,8 @@ type StubUser = {
 let recorded: Array<{ method: string; url: string; body: string }> = []
 /** `profiles?select=id&wechat_openid=eq.<openid>` 的作答 */
 let profileRows: Array<{ id: string }> = []
+/** `sections?select=name,kind` 的作答（注册时校验声部用） */
+let sectionRows: Array<{ name: string; kind: string }> = []
 /** `POST /auth/v1/admin/users` 是否失败（模拟「合成邮箱已存在」） */
 let createUserFails = false
 /** 管理员列表的分页作答 */
@@ -97,6 +99,8 @@ globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
     const page = Number(new URL(url).searchParams.get('page') ?? '1')
     return Promise.resolve(jsonRes({ users: adminPages[page - 1] ?? [], aud: 'authenticated' }))
   }
+  // PostgREST sections（注册时校验声部）
+  if (url.includes('/rest/v1/sections')) return Promise.resolve(jsonRes(sectionRows))
   // PostgREST profiles
   if (url.includes('/rest/v1/profiles')) {
     if (method === 'PATCH') return Promise.resolve(new Response(null, { status: 204 }))
@@ -122,6 +126,14 @@ Deno.env.set('WECHAT_APP_SECRET', 'WX_APP_SECRET')
 const reset = () => {
   recorded = []
   profileRows = []
+  // 只放测试真正会用到的几个值：校验只按 name/kind 判定，不需要整份字典
+  sectionRows = [
+    { name: '第一小提琴', kind: 'instrument' },
+    { name: '长号', kind: 'instrument' },
+    { name: '其他', kind: 'special' },
+    { name: '总谱', kind: 'special' },
+    { name: '木管', kind: 'group' },
+  ]
   createUserFails = false
   adminPages = []
   tokenOk = true
@@ -135,7 +147,7 @@ const register = (over: Record<string, unknown> = {}) =>
         code: 'WX_CODE',
         full_name: '张三',
         email: USER_EMAIL,
-        instrument: '小提琴',
+        instrument: '第一小提琴',
         college: '元培',
         join_date: '2024秋',
         is_in_orchestra: true,
@@ -288,4 +300,41 @@ Deno.test('openid 已绑定：409，一个写入都不发生', async () => {
     false,
     '已绑定就该原地返回，不该有任何写入',
   )
+})
+
+Deno.test('旧版 mp 的 Other / OTHER：归一为 其他 后落库', async () => {
+  for (const legacy of ['Other', 'OTHER']) {
+    reset()
+    const res = await register({ instrument: legacy })
+    assertEquals(res.status, 200, `${legacy} 应放行`)
+
+    const patch = recorded.find((r) => r.method === 'PATCH' && r.url.includes('/rest/v1/profiles'))
+    assertEquals(patch !== undefined, true, `${legacy} 应该写 profile`)
+    assertEquals(JSON.parse(patch!.body).instrument, '其他')
+  }
+})
+
+Deno.test('非标准声部：400，且不调用微信、不建号', async () => {
+  for (const bad of ['小提琴', '总谱', 'Piano', '木管']) {
+    reset()
+    const res = await register({ instrument: bad })
+    assertEquals(res.status, 400, `${bad} 应回 400`)
+    assertEquals((await res.json() as { error: string }).error, 'unknown instrument')
+    assertEquals(
+      recorded.some((r) => r.url.includes('api.weixin.qq.com')),
+      false,
+      `${bad} 不该调用微信 code2session`,
+    )
+    assertEquals(
+      recorded.some((r) => r.method === 'POST' && r.url.includes('/auth/v1/admin/users')),
+      false,
+      `${bad} 不该创建 auth user`,
+    )
+  }
+})
+
+Deno.test('标准乐器放行（长号）', async () => {
+  reset()
+  const res = await register({ instrument: '长号' })
+  assertEquals(res.status, 200)
 })
