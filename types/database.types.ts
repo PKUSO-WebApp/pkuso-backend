@@ -1617,6 +1617,10 @@ export type Database = {
         }
         Returns: string
       }
+      create_rehearsal_with_repertoire: {
+        Args: { p_pieces?: Json; p_rehearsal: Json }
+        Returns: number
+      }
       delete_device: {
         Args: { p_device_id: string; p_self_device_id: string }
         Returns: undefined
@@ -1708,6 +1712,10 @@ export type Database = {
       rehearsal_is_upcoming: {
         Args: { p_end: string; p_start: string }
         Returns: boolean
+      }
+      save_rehearsal_repertoire: {
+        Args: { p_pieces: Json; p_rehearsal_id: number }
+        Returns: undefined
       }
       set_device_trust: {
         Args: {
