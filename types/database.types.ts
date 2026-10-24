@@ -1060,6 +1060,56 @@ export type Database = {
           },
         ]
       }
+      section_member_preferences: {
+        Row: {
+          preferred_sub_part: number | null
+          updated_at: string
+          updated_by: string | null
+          user_id: string
+        }
+        Insert: {
+          preferred_sub_part?: number | null
+          updated_at?: string
+          updated_by?: string | null
+          user_id: string
+        }
+        Update: {
+          preferred_sub_part?: number | null
+          updated_at?: string
+          updated_by?: string | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "section_member_preferences_updated_by_fkey"
+            columns: ["updated_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "section_member_preferences_updated_by_fkey"
+            columns: ["updated_by"]
+            isOneToOne: false
+            referencedRelation: "profiles_roster"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "section_member_preferences_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: true
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "section_member_preferences_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: true
+            referencedRelation: "profiles_roster"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       sections: {
         Row: {
           can_lead: boolean
@@ -1213,66 +1263,6 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "sheet_music_shared_score_files"
             referencedColumns: ["file_id"]
-          },
-        ]
-      }
-      sheet_music_distributions: {
-        Row: {
-          distributed_at: string | null
-          distributed_by: string | null
-          id: string
-          part_id: string | null
-          user_id: string | null
-        }
-        Insert: {
-          distributed_at?: string | null
-          distributed_by?: string | null
-          id?: string
-          part_id?: string | null
-          user_id?: string | null
-        }
-        Update: {
-          distributed_at?: string | null
-          distributed_by?: string | null
-          id?: string
-          part_id?: string | null
-          user_id?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "sheet_music_distributions_distributed_by_fkey"
-            columns: ["distributed_by"]
-            isOneToOne: false
-            referencedRelation: "profiles"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "sheet_music_distributions_distributed_by_fkey"
-            columns: ["distributed_by"]
-            isOneToOne: false
-            referencedRelation: "profiles_roster"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "sheet_music_distributions_part_id_fkey"
-            columns: ["part_id"]
-            isOneToOne: false
-            referencedRelation: "sheet_music_parts"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "sheet_music_distributions_user_id_fkey"
-            columns: ["user_id"]
-            isOneToOne: false
-            referencedRelation: "profiles"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "sheet_music_distributions_user_id_fkey"
-            columns: ["user_id"]
-            isOneToOne: false
-            referencedRelation: "profiles_roster"
-            referencedColumns: ["id"]
           },
         ]
       }
@@ -1741,6 +1731,7 @@ export type Database = {
         Args: { p_rehearsal_id: number }
         Returns: boolean
       }
+      can_set_preference: { Args: { p_member: string }; Returns: boolean }
       can_view_member_attendance: {
         Args: { p_member: string }
         Returns: boolean
@@ -1903,6 +1894,10 @@ export type Database = {
           p_self_device_id: string
           p_trusted: boolean
         }
+        Returns: undefined
+      }
+      set_member_preference: {
+        Args: { p_member: string; p_sub_part: number }
         Returns: undefined
       }
       sign_in_attendance_location: {
