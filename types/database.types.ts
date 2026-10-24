@@ -1736,6 +1736,10 @@ export type Database = {
         Args: { p_actor_id: string; p_capability: string; p_user_id: string }
         Returns: undefined
       }
+      admin_remove_president: {
+        Args: { p_actor_id: string; p_user_id: string }
+        Returns: undefined
+      }
       admin_remove_principal: {
         Args: { p_actor_id: string; p_instrument: string }
         Returns: undefined
@@ -1746,6 +1750,10 @@ export type Database = {
       }
       admin_revoke_capability: {
         Args: { p_actor_id: string; p_capability: string; p_user_id: string }
+        Returns: undefined
+      }
+      admin_set_president: {
+        Args: { p_actor_id: string; p_user_id: string }
         Returns: undefined
       }
       admin_set_principal: {
@@ -1919,6 +1927,7 @@ export type Database = {
         }[]
       }
       my_managed_sections: { Args: never; Returns: string[] }
+      president_capability_keys: { Args: never; Returns: string[] }
       principal_instruments: {
         Args: { p_principal: string }
         Returns: string[]
