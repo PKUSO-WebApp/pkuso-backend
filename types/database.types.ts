@@ -1366,6 +1366,56 @@ export type Database = {
           },
         ]
       }
+      sheet_music_print_copies: {
+        Row: {
+          copies: number
+          file_id: string
+          updated_at: string
+          updated_by: string | null
+        }
+        Insert: {
+          copies: number
+          file_id: string
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Update: {
+          copies?: number
+          file_id?: string
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "sheet_music_print_copies_file_id_fkey"
+            columns: ["file_id"]
+            isOneToOne: true
+            referencedRelation: "sheet_music_files"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sheet_music_print_copies_file_id_fkey"
+            columns: ["file_id"]
+            isOneToOne: true
+            referencedRelation: "sheet_music_shared_score_files"
+            referencedColumns: ["file_id"]
+          },
+          {
+            foreignKeyName: "sheet_music_print_copies_updated_by_fkey"
+            columns: ["updated_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sheet_music_print_copies_updated_by_fkey"
+            columns: ["updated_by"]
+            isOneToOne: false
+            referencedRelation: "profiles_roster"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       sheet_music_shared_annotation_history: {
         Row: {
           file_id: string
@@ -1731,6 +1781,7 @@ export type Database = {
         Args: { p_rehearsal_id: number }
         Returns: boolean
       }
+      can_manage_sheet_music: { Args: never; Returns: boolean }
       can_set_preference: { Args: { p_member: string }; Returns: boolean }
       can_view_member_attendance: {
         Args: { p_member: string }
@@ -1813,6 +1864,24 @@ export type Database = {
           last_seen_at: string
           token: string
           trusted: boolean
+        }[]
+      }
+      get_score_print_plan: {
+        Args: { p_score_id: string }
+        Returns: {
+          assigned_members: number
+          auto_copies: number
+          copies: number
+          file_id: string
+          file_name: string
+          file_size: number
+          kind: string
+          manual_copies: number
+          part_id: string
+          section: string
+          section_members: number
+          storage_path: string
+          sub_parts: number[]
         }[]
       }
       get_section_leave_requests: {
@@ -1898,6 +1967,10 @@ export type Database = {
       }
       set_member_preference: {
         Args: { p_member: string; p_sub_part: number }
+        Returns: undefined
+      }
+      set_print_copies: {
+        Args: { p_copies: number; p_file_id: string }
         Returns: undefined
       }
       sign_in_attendance_location: {
