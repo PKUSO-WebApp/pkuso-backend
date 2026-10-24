@@ -1947,6 +1947,14 @@ export type Database = {
         Args: { p_file_id: string; p_keep?: number; p_page: number }
         Returns: undefined
       }
+      update_attendance_change_request: {
+        Args: {
+          p_reason?: string
+          p_request_id: string
+          p_to_status: Database["public"]["Enums"]["attendanceStatus"]
+        }
+        Returns: undefined
+      }
     }
     Enums: {
       attendanceChangeRequestStatus:
