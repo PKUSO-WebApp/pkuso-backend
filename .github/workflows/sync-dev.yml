@@ -41,7 +41,8 @@ jobs:
         # Supabase CLI 3.x 起 `db push` 默认打**本地**库（127.0.0.1:5432），
         # 必须显式 `--remote` 才会推到已 link 的项目。CLI 3.0.0 实测：
         # 不加时会在 runner 上因连不上本地 Postgres 直接失败。
-        run: supabase db push --remote
+        # `--yes`：非 TTY 环境不接受交互确认（CLI 3.x 对 hosted 变更是强制要求）。
+        run: supabase db push --remote --yes
 
       # `supabase functions deploy` 会在本地用 Docker 拉 `ghcr.io/supabase/edge-runtime`。
       # 匿名拉取按**出口 IP** 限流（GitHub 托管 runner 是共享 IP），实测会以
@@ -66,7 +67,9 @@ jobs:
             # 当成函数部署必然失败。共享代码由 import 它的函数各自打包进去。
             case "$name" in _*) echo "跳过共享目录 $name"; continue;; esac
             echo "::group::Deploying $name"
-            if ! supabase functions deploy "$name" --no-verify-jwt 2>&1; then
+            # `--yes`：CLI 3.x 在非 TTY 下会因「Confirmation required」直接失败
+            #（stdout 不是终端，它不会等输入，也不会部署任何东西）。
+            if ! supabase functions deploy "$name" --no-verify-jwt --yes 2>&1; then
               echo "::error::Failed to deploy $name"
               FAILED="$FAILED $name"
             fi
@@ -78,7 +81,8 @@ jobs:
           fi
 
       - name: Generate types from dev
-        run: supabase gen types typescript --schema public > types/database.types.ts
+        # CLI 3.x 起 `gen types` 同样默认打本地库，必须 `--remote`。
+        run: supabase gen types typescript --schema public --remote > types/database.types.ts
 
       - name: Prepare types for frontend repos
         run: mkdir -p src/types && cp types/database.types.ts src/types/database.types.ts
