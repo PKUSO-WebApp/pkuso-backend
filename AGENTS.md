@@ -97,7 +97,7 @@ git config core.hooksPath .githooks     # 每个克隆一次，没法提交
 
 **推送 `main` 之后**（不是 PR 阶段）CI 才执行：
 
-1. `supabase db push` → 应用 migration 到 dev
+1. `supabase db push --remote` → 应用 migration 到 dev（CLI 3.x 起不加 `--remote` 会打本地库）
 2. `supabase functions deploy` → 部署 Edge Functions 到 dev
 3. `supabase gen types` → 更新 `types/database.types.ts` 并提交回本仓库 `main`
 4. 把 dev 类型直推到 `pkuso-web` 的 `main` 与 `pkuso-mp` 的 `dev`
@@ -107,7 +107,7 @@ git config core.hooksPath .githooks     # 每个克隆一次，没法提交
 在 GitHub Actions 中手动触发 `Deploy to Prod` workflow，输入 `deploy` 确认。实际步骤比这里列的多（含迁移对账与跨仓写入），以 `deploy-prod.yml` 为准：
 
 1. 对账 dev / prod 的 migration 版本差异
-2. `supabase db push --include-all` → 应用 migration 到 prod
+2. `supabase db push --include-all --remote` → 应用 migration 到 prod（CLI 3.x 起不加 `--remote` 会打本地库）
 3. `supabase functions deploy` → 部署 Edge Functions 到 prod
 4. `supabase gen types` → 更新 `types/database.types.ts` 并提交回本仓库 `main`
 5. 把 prod 类型直推到 `pkuso-mp` 的 `main`

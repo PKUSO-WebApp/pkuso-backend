@@ -38,7 +38,10 @@ jobs:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
 
       - name: Apply migrations to dev
-        run: supabase db push
+        # Supabase CLI 3.x 起 `db push` 默认打**本地**库（127.0.0.1:5432），
+        # 必须显式 `--remote` 才会推到已 link 的项目。CLI 3.0.0 实测：
+        # 不加时会在 runner 上因连不上本地 Postgres 直接失败。
+        run: supabase db push --remote
 
       # `supabase functions deploy` 会在本地用 Docker 拉 `ghcr.io/supabase/edge-runtime`。
       # 匿名拉取按**出口 IP** 限流（GitHub 托管 runner 是共享 IP），实测会以
