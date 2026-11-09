@@ -2,6 +2,8 @@
  * 把**共享层**的批注烧进 PDF（P6d）：任何已登录成员都能导出「当前共享谱」。
  *
  * 输入：`{ file_id: "<uuid>" }`（`sheet_music_files.id`）
+ *   或 `{ share_id: "<uuid>" }`（0.6.1 共享副本；读该副本的共享层
+ *   `sheet_music_share_annotations`，原件来自副本的源文件）。
  * 输出：`{ path, url, expiresIn, bytes, pdfPages, annotatedPages, drawnStrokes,
  *          dotStrokes, skippedStrokes, outOfRangeStrokes }`
  *
@@ -49,6 +51,11 @@ export function sharedPdfPath(fileId: string): string {
   return `shared/${fileId}.pdf`;
 }
 
+/** 共享副本的共享层产物：前缀区分，避免与同名 file_id 撞路径。 */
+export function sharedCopyPdfPath(shareId: string): string {
+  return `shared/share-${shareId}.pdf`;
+}
+
 export async function handler(req: Request): Promise<Response> {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: CORS_HEADERS });
@@ -67,12 +74,18 @@ export async function handler(req: Request): Promise<Response> {
   if (!auth.ok) return auth.response;
 
   let fileId: unknown;
+  let shareId: unknown;
   try {
-    ({ file_id: fileId } = await req.json());
+    ({ file_id: fileId, share_id: shareId } = await req.json());
   } catch {
     return json({ error: "invalid json body" }, 400, CORS_HEADERS);
   }
-  if (!isFileId(fileId)) {
+  const shareMode = shareId !== undefined && shareId !== null;
+  if (shareMode) {
+    if (!isFileId(shareId)) {
+      return json({ error: "invalid share_id" }, 400, CORS_HEADERS);
+    }
+  } else if (!isFileId(fileId)) {
     return json({ error: "invalid file_id" }, 400, CORS_HEADERS);
   }
 
@@ -80,26 +93,51 @@ export async function handler(req: Request): Promise<Response> {
   const authorization = req.headers.get("Authorization")!;
   const asCaller = userClient(env, authorization);
 
-  const { data: file, error: fileError } = await asCaller
-    .from("sheet_music_files")
-    .select(FILE_COLUMNS)
-    .eq("id", fileId)
-    .maybeSingle();
-
-  if (fileError) {
-    console.error("compose-shared-pdf 读文件行失败:", fileError.message);
-    return json({ error: "failed to load file" }, 500, CORS_HEADERS);
+  let file: { storage_path: unknown; file_size: unknown } | null = null;
+  if (shareMode) {
+    const { data, error } = await asCaller
+      .from("sheet_music_annotation_share_files")
+      .select(FILE_COLUMNS)
+      .eq("share_id", shareId)
+      .maybeSingle();
+    if (error) {
+      console.error("compose-shared-pdf 读共享副本失败:", error.message);
+      return json({ error: "failed to load share" }, 500, CORS_HEADERS);
+    }
+    file = data;
+  } else {
+    const { data, error } = await asCaller
+      .from("sheet_music_files")
+      .select(FILE_COLUMNS)
+      .eq("id", fileId)
+      .maybeSingle();
+    if (error) {
+      console.error("compose-shared-pdf 读文件行失败:", error.message);
+      return json({ error: "failed to load file" }, 500, CORS_HEADERS);
+    }
+    file = data;
   }
+
   if (!file) {
-    return json({ error: "file not found" }, 404, CORS_HEADERS);
+    return json({ error: shareMode ? "share not found" : "file not found" }, 404, CORS_HEADERS);
   }
 
   // ⚠️ 共享层**不按 user 过滤**（这是与个人函数的唯一读路径差异）；RLS 只给已登录用户读
-  const { data: rows, error: annotationError } = await asCaller
-    .from(SHARED_TABLE)
-    .select("page, strokes")
-    .eq("file_id", fileId)
-    .limit(MAX_ANNOTATION_ROWS + 1);
+  let rows: { page: unknown; strokes: unknown }[] | null = null;
+  let annotationError: { message: string } | null = null;
+  if (shareMode) {
+    ({ data: rows, error: annotationError } = await asCaller
+      .from("sheet_music_share_annotations")
+      .select("page, strokes")
+      .eq("share_id", shareId)
+      .limit(MAX_ANNOTATION_ROWS + 1));
+  } else {
+    ({ data: rows, error: annotationError } = await asCaller
+      .from(SHARED_TABLE)
+      .select("page, strokes")
+      .eq("file_id", fileId)
+      .limit(MAX_ANNOTATION_ROWS + 1));
+  }
 
   if (annotationError) {
     console.error("compose-shared-pdf 读共享批注失败:", annotationError.message);
@@ -163,7 +201,9 @@ export async function handler(req: Request): Promise<Response> {
     );
   }
 
-  const path = sharedPdfPath(fileId);
+  const path = shareMode
+    ? sharedCopyPdfPath(shareId as string)
+    : sharedPdfPath(fileId as string);
   const admin = serviceClient(env);
 
   const upload = await admin.storage.from(OUTPUT_BUCKET).upload(path, composed.bytes, {
