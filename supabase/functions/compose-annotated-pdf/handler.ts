@@ -2,6 +2,8 @@
  * 把**当前登录用户**对一份乐谱的批注烧进 PDF，产出一份可以直接转发/分享的 PDF。
  *
  * 输入：`{ file_id: "<uuid>" }`（`sheet_music_files.id`）
+ *   或 `{ share_id: "<uuid>" }`（0.6.1 共享副本；此时读的是该副本的**个人层**
+ *   `sheet_music_share_user_annotations`，原件仍来自副本的源文件）。
  * 输出：`{ path, url, expiresIn, bytes, pdfPages, annotatedPages, drawnStrokes,
  *          dotStrokes, skippedStrokes, outOfRangeStrokes }`
  * `url` 是一个**签名 URL**（私有桶），客户端 `downloadFile` 它即可拿到产物。
@@ -109,6 +111,11 @@ export function annotatedPath(userId: string, fileId: string): string {
   return `${userId}/${fileId}.pdf`;
 }
 
+/** 共享副本的个人层产物：前缀区分，避免与同名 file_id 撞路径。 */
+export function shareAnnotatedPath(userId: string, shareId: string): string {
+  return `${userId}/share-${shareId}.pdf`;
+}
+
 export async function handler(req: Request): Promise<Response> {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: CORS_HEADERS });
@@ -128,12 +135,18 @@ export async function handler(req: Request): Promise<Response> {
   if (!auth.ok) return auth.response;
 
   let fileId: unknown;
+  let shareId: unknown;
   try {
-    ({ file_id: fileId } = await req.json());
+    ({ file_id: fileId, share_id: shareId } = await req.json());
   } catch {
     return json({ error: "invalid json body" }, 400, CORS_HEADERS);
   }
-  if (!isFileId(fileId)) {
+  const shareMode = shareId !== undefined && shareId !== null;
+  if (shareMode) {
+    if (!isFileId(shareId)) {
+      return json({ error: "invalid share_id" }, 400, CORS_HEADERS);
+    }
+  } else if (!isFileId(fileId)) {
     return json({ error: "invalid file_id" }, 400, CORS_HEADERS);
   }
 
@@ -141,27 +154,54 @@ export async function handler(req: Request): Promise<Response> {
   const authorization = req.headers.get("Authorization")!;
   const asCaller = userClient(env, authorization);
 
-  const { data: file, error: fileError } = await asCaller
-    .from("sheet_music_files")
-    .select(FILE_COLUMNS)
-    .eq("id", fileId)
-    .maybeSingle();
-
-  if (fileError) {
-    console.error("compose-annotated-pdf 读文件行失败:", fileError.message);
-    return json({ error: "failed to load file" }, 500, CORS_HEADERS);
+  let file: { storage_path: unknown; file_size: unknown } | null = null;
+  if (shareMode) {
+    // 共享副本：原件来自源文件；视图对全团已登录用户可读
+    const { data, error } = await asCaller
+      .from("sheet_music_annotation_share_files")
+      .select(FILE_COLUMNS)
+      .eq("share_id", shareId)
+      .maybeSingle();
+    if (error) {
+      console.error("compose-annotated-pdf 读共享副本失败:", error.message);
+      return json({ error: "failed to load share" }, 500, CORS_HEADERS);
+    }
+    file = data;
+  } else {
+    const { data, error } = await asCaller
+      .from("sheet_music_files")
+      .select(FILE_COLUMNS)
+      .eq("id", fileId)
+      .maybeSingle();
+    if (error) {
+      console.error("compose-annotated-pdf 读文件行失败:", error.message);
+      return json({ error: "failed to load file" }, 500, CORS_HEADERS);
+    }
+    file = data;
   }
+
   if (!file) {
-    return json({ error: "file not found" }, 404, CORS_HEADERS);
+    return json({ error: shareMode ? "share not found" : "file not found" }, 404, CORS_HEADERS);
   }
 
   // ⚠️ `.eq("user_id", ...)` 与 RLS 是**两层**，别删（理由见文件头）
-  const { data: rows, error: annotationError } = await asCaller
-    .from("sheet_music_annotations")
-    .select("page, strokes")
-    .eq("file_id", fileId)
-    .eq("user_id", auth.userId)
-    .limit(MAX_ANNOTATION_ROWS + 1);
+  let rows: { page: unknown; strokes: unknown }[] | null = null;
+  let annotationError: { message: string } | null = null;
+  if (shareMode) {
+    ({ data: rows, error: annotationError } = await asCaller
+      .from("sheet_music_share_user_annotations")
+      .select("page, strokes")
+      .eq("share_id", shareId)
+      .eq("user_id", auth.userId)
+      .limit(MAX_ANNOTATION_ROWS + 1));
+  } else {
+    ({ data: rows, error: annotationError } = await asCaller
+      .from("sheet_music_annotations")
+      .select("page, strokes")
+      .eq("file_id", fileId)
+      .eq("user_id", auth.userId)
+      .limit(MAX_ANNOTATION_ROWS + 1));
+  }
 
   if (annotationError) {
     console.error("compose-annotated-pdf 读批注失败:", annotationError.message);
@@ -223,7 +263,9 @@ export async function handler(req: Request): Promise<Response> {
     );
   }
 
-  const path = annotatedPath(auth.userId, fileId);
+  const path = shareMode
+    ? shareAnnotatedPath(auth.userId, shareId as string)
+    : annotatedPath(auth.userId, fileId as string);
   const admin = serviceClient(env);
 
   const upload = await admin.storage.from(OUTPUT_BUCKET).upload(path, composed.bytes, {
