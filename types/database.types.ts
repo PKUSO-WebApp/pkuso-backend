@@ -646,10 +646,12 @@ export type Database = {
       profiles: {
         Row: {
           avatar_url: string | null
+          birthday: string | null
           college: string | null
           created_at: string | null
           email: string | null
           full_name: string | null
+          hide_birthday: boolean
           hide_college: boolean
           hide_email: boolean
           hide_join_date: boolean
@@ -669,10 +671,12 @@ export type Database = {
         }
         Insert: {
           avatar_url?: string | null
+          birthday?: string | null
           college?: string | null
           created_at?: string | null
           email?: string | null
           full_name?: string | null
+          hide_birthday?: boolean
           hide_college?: boolean
           hide_email?: boolean
           hide_join_date?: boolean
@@ -692,10 +696,12 @@ export type Database = {
         }
         Update: {
           avatar_url?: string | null
+          birthday?: string | null
           college?: string | null
           created_at?: string | null
           email?: string | null
           full_name?: string | null
+          hide_birthday?: boolean
           hide_college?: boolean
           hide_email?: boolean
           hide_join_date?: boolean
@@ -1919,10 +1925,12 @@ export type Database = {
       profiles_roster: {
         Row: {
           avatar_url: string | null
+          birthday: string | null
           college: string | null
           created_at: string | null
           email: string | null
           full_name: string | null
+          hide_birthday: boolean | null
           hide_college: boolean | null
           hide_email: boolean | null
           hide_join_date: boolean | null
@@ -1939,10 +1947,12 @@ export type Database = {
         }
         Insert: {
           avatar_url?: string | null
+          birthday?: never
           college?: never
           created_at?: string | null
           email?: never
           full_name?: string | null
+          hide_birthday?: boolean | null
           hide_college?: boolean | null
           hide_email?: boolean | null
           hide_join_date?: boolean | null
@@ -1959,10 +1969,12 @@ export type Database = {
         }
         Update: {
           avatar_url?: string | null
+          birthday?: never
           college?: never
           created_at?: string | null
           email?: never
           full_name?: string | null
+          hide_birthday?: boolean | null
           hide_college?: boolean | null
           hide_email?: boolean | null
           hide_join_date?: boolean | null
