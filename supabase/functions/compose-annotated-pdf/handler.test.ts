@@ -1,6 +1,6 @@
 import { assert, assertEquals } from "https://deno.land/std@0.168.0/testing/asserts.ts";
 import { PDFArray, PDFDocument } from "npm:pdf-lib@1.17.1";
-import { annotatedPath, handler } from "./handler.ts";
+import { annotatedPath, handler, shareAnnotatedPath } from "./handler.ts";
 import { MAX_TOTAL_STROKES } from "../_shared/pdf-annotations/compose.ts";
 import {
   contentRangeTotal,
@@ -47,6 +47,7 @@ const TOKEN = "caller-jwt-token";
 const ME = "aaaaaaaa-1111-4111-8111-111111111111";
 const OTHER = "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb";
 const FILE_ID = "11111111-1111-4111-8111-111111111111";
+const SHARE_ID = "44444444-4444-4444-8444-444444444444";
 const STORAGE_PATH = "22222222-2222-4222-8222-222222222222/33333333-3333-4333-8333-333333333333.pdf";
 
 Deno.env.set("SUPABASE_URL", TEST_URL);
@@ -61,6 +62,13 @@ let requests: Recorded[] = [];
 let files: Array<{ id: string; storage_path: string; file_size: number | null }> = [];
 /** `sheet_music_annotations` 的内容：**两个用户的行都在这里**（见文件头） */
 let annotations: Array<{ file_id: string; user_id: string; page: number; strokes: unknown }> = [];
+let shareFiles: Array<{ share_id: string; storage_path: string; file_size: number | null }> = [];
+let shareUserAnnotations: Array<{
+  share_id: string;
+  user_id: string;
+  page: number;
+  strokes: unknown;
+}> = [];
 /** 原件的字节（显式标 `Uint8Array`：默认会推成 `Uint8Array<ArrayBuffer>`，pdf-lib 的产物赋不进来） */
 let sourceBytes: Uint8Array = new Uint8Array();
 /** 原件下载返回非 200 时直接回这个状态（测 404 / 502） */
@@ -161,6 +169,27 @@ function route(method: string, url: string, headers: Headers): Response {
 
   // PostgREST：**照它的语义过滤**。`user_id` 过滤只在客户端带了的时候才生效 ——
   // 这正是「少写 `.eq("user_id", …)` 会被用例抓到」的机制。
+  if (url.includes("/rest/v1/sheet_music_annotation_share_files")) {
+    const shareId = eqParam(url, "share_id");
+    return jsonRes(
+      shareFiles
+        .filter((f) => f.share_id === shareId)
+        .map((f) => ({ storage_path: f.storage_path, file_size: f.file_size })),
+    );
+  }
+  if (url.includes("/rest/v1/sheet_music_share_user_annotations")) {
+    const shareId = eqParam(url, "share_id");
+    const userId = eqParam(url, "user_id");
+    const limit = Number(new URL(url).searchParams.get("limit") ?? Number.MAX_SAFE_INTEGER);
+    return jsonRes(
+      shareUserAnnotations
+        .filter((r) => r.share_id === shareId)
+        .filter((r) => userId === null || r.user_id === userId)
+        .slice(0, limit)
+        .map((r) => ({ page: r.page, strokes: r.strokes })),
+    );
+  }
+
   if (url.includes("/rest/v1/sheet_music_files")) {
     const id = eqParam(url, "id");
     return jsonRes(
@@ -211,6 +240,8 @@ const call = (body: unknown, token: string | null = TOKEN) =>
 const restCalls = () => requests.filter((r) => r.url.includes("/rest/v1/"));
 const storageCalls = () => requests.filter((r) => r.url.includes("/storage/v1/"));
 const annotationCall = () => restCalls().find((r) => r.url.includes("sheet_music_annotations"))!;
+const shareUserAnnotationCall = () =>
+  restCalls().find((r) => r.url.includes("sheet_music_share_user_annotations"))!;
 const uploadCall = () =>
   requests.find((r) => r.url.includes(`/storage/v1/object/${OUTPUT_BUCKET}/`))!;
 const signCall = () => requests.find((r) => r.url.includes("/storage/v1/object/sign/"))!;
@@ -221,6 +252,8 @@ const reset = () => {
   requests = [];
   files = [];
   annotations = [];
+  shareFiles = [];
+  shareUserAnnotations = [];
   sourceBytes = new Uint8Array();
   sourceStatus = 200;
   upstream = "honest";
@@ -656,6 +689,34 @@ Deno.test("500：原件不是 PDF → 500，且不把内部异常原文吐给调
 });
 
 // ------------------------------------------------------------------ 产物
+
+Deno.test("0.6.1 share_id：只读本人的共享副本个人层；产物 <user>/share-<id>.pdf", async () => {
+  reset();
+  shareFiles = [{ share_id: SHARE_ID, storage_path: STORAGE_PATH, file_size: 1024 }];
+  shareUserAnnotations = [
+    { share_id: SHARE_ID, user_id: ME, page: 1, strokes: [MY_STROKE] },
+    { share_id: SHARE_ID, user_id: OTHER, page: 2, strokes: [OTHER_STROKE] },
+  ];
+  sourceBytes = await sourceFixture();
+
+  const res = await call({ share_id: SHARE_ID });
+  assertEquals(res.status, 200);
+
+  // 读的是副本的个人层（share_id + user_id），不是原文件的个人批注表
+  const annUrl = shareUserAnnotationCall().url;
+  assertEquals(eqParam(annUrl, "share_id"), SHARE_ID);
+  assertEquals(eqParam(annUrl, "user_id"), ME);
+  assertEquals(eqParam(annUrl, "file_id"), null);
+
+  const upload = uploadCall();
+  assertEquals(
+    upload.url.includes(
+      `/storage/v1/object/${OUTPUT_BUCKET}/${ME}/share-${SHARE_ID}.pdf`,
+    ),
+    true,
+  );
+  assertEquals((await res.json()).path, shareAnnotatedPath(ME, SHARE_ID));
+});
 
 Deno.test("成功：产物落到私有桶的 <user>/<file>.pdf，回绝对签名 URL", async () => {
   reset();

@@ -11,7 +11,7 @@
 
 import { assert, assertEquals } from "https://deno.land/std@0.168.0/testing/asserts.ts";
 import { PDFDocument } from "npm:pdf-lib@1.17.1";
-import { handler, sharedPdfPath } from "./handler.ts";
+import { handler, sharedCopyPdfPath, sharedPdfPath } from "./handler.ts";
 import { OUTPUT_BUCKET, SOURCE_BUCKET } from "../_shared/pdf-annotations/export.ts";
 
 const TEST_URL = "https://test.supabase.co";
@@ -19,6 +19,7 @@ const SERVICE_KEY = "TEST_SERVICE_KEY";
 const TOKEN = "caller-jwt-token";
 const ME = "aaaaaaaa-1111-4111-8111-111111111111";
 const FILE_ID = "11111111-1111-4111-8111-111111111111";
+const SHARE_ID = "44444444-4444-4444-8444-444444444444";
 const STORAGE_PATH = "22222222-2222-4222-8222-222222222222/33333333-3333-4333-8333-333333333333.pdf";
 
 Deno.env.set("SUPABASE_URL", TEST_URL);
@@ -29,6 +30,8 @@ type Recorded = { method: string; url: string; headers: Headers; body: Uint8Arra
 let requests: Recorded[] = [];
 let files: Array<{ id: string; storage_path: string; file_size: number | null }> = [];
 let sharedRows: Array<{ file_id: string; page: number; strokes: unknown }> = [];
+let shareFiles: Array<{ share_id: string; storage_path: string; file_size: number | null }> = [];
+let shareCopyRows: Array<{ share_id: string; page: number; strokes: unknown }> = [];
 let sourceBytes: Uint8Array = new Uint8Array();
 let authRejects = false;
 let uploadFails = false;
@@ -92,6 +95,26 @@ function route(method: string, url: string, headers: Headers): Response {
     });
   }
 
+  if (url.includes("/rest/v1/sheet_music_annotation_share_files")) {
+    const shareId = eqParam(url, "share_id");
+    return jsonRes(
+      shareFiles
+        .filter((f) => f.share_id === shareId)
+        .map((f) => ({ storage_path: f.storage_path, file_size: f.file_size })),
+    );
+  }
+
+  if (url.includes("/rest/v1/sheet_music_share_annotations")) {
+    const shareId = eqParam(url, "share_id");
+    const limit = Number(new URL(url).searchParams.get("limit") ?? Number.MAX_SAFE_INTEGER);
+    return jsonRes(
+      shareCopyRows
+        .filter((r) => r.share_id === shareId)
+        .slice(0, limit)
+        .map((r) => ({ page: r.page, strokes: r.strokes })),
+    );
+  }
+
   if (url.includes("/rest/v1/sheet_music_files")) {
     const id = eqParam(url, "id");
     return jsonRes(
@@ -142,6 +165,8 @@ const restCalls = () => requests.filter((r) => r.url.includes("/rest/v1/"));
 const storageCalls = () => requests.filter((r) => r.url.includes("/storage/v1/"));
 const annotationCall = () =>
   restCalls().find((r) => r.url.includes("sheet_music_shared_annotations"))!;
+const shareAnnotationCall = () =>
+  restCalls().find((r) => r.url.includes("sheet_music_share_annotations"))!;
 const uploadCall = () =>
   requests.find((r) => r.url.includes(`/storage/v1/object/${OUTPUT_BUCKET}/`))!;
 
@@ -149,6 +174,8 @@ const reset = () => {
   requests = [];
   files = [];
   sharedRows = [];
+  shareFiles = [];
+  shareCopyRows = [];
   sourceBytes = new Uint8Array();
   authRejects = false;
   uploadFails = false;
@@ -182,6 +209,30 @@ async function seedHappy(): Promise<void> {
 
 Deno.test("sharedPdfPath：产物不带用户段（共享层不属于某个人）", () => {
   assertEquals(sharedPdfPath(FILE_ID), `shared/${FILE_ID}.pdf`);
+});
+
+Deno.test("0.6.1 share_id：读共享副本的共享层，产物 shared/share-<id>.pdf", async () => {
+  reset();
+  shareFiles = [{ share_id: SHARE_ID, storage_path: STORAGE_PATH, file_size: 1024 }];
+  shareCopyRows = [{ share_id: SHARE_ID, page: 1, strokes: [SHARED_STROKE] }];
+  sourceBytes = await sourceFixture();
+
+  const res = await call({ share_id: SHARE_ID });
+  assertEquals(res.status, 200);
+
+  // 读的是副本的共享层（share_id），不是原文件的旧共享表
+  const annUrl = shareAnnotationCall().url;
+  assertEquals(eqParam(annUrl, "share_id"), SHARE_ID);
+  assertEquals(eqParam(annUrl, "file_id"), null);
+
+  const upload = uploadCall();
+  assertEquals(
+    upload.url.includes(
+      `/storage/v1/object/${OUTPUT_BUCKET}/shared/share-${SHARE_ID}.pdf`,
+    ),
+    true,
+  );
+  assertEquals((await res.json()).path, sharedCopyPdfPath(SHARE_ID));
 });
 
 Deno.test("鉴权：缺 Authorization → 401，且不碰库与 storage", async () => {
