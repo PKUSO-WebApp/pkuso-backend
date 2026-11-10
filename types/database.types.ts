@@ -2251,6 +2251,16 @@ export type Database = {
           share_id: string
         }[]
       }
+      decide_attendance_change_request_core: {
+        Args: {
+          p_actor_id: string
+          p_approve: boolean
+          p_force: boolean
+          p_reject_reason: string
+          p_request_id: string
+        }
+        Returns: Json
+      }
       delete_device: {
         Args: { p_device_id: string; p_self_device_id: string }
         Returns: undefined
@@ -2351,7 +2361,122 @@ export type Database = {
         }[]
       }
       my_managed_sections: { Args: never; Returns: string[] }
+      president_attendance_export: {
+        Args: {
+          p_end_date?: string
+          p_rehearsal_id?: number
+          p_start_date?: string
+        }
+        Returns: {
+          email: string
+          full_name: string
+          instrument: string
+          is_in_orchestra: boolean
+          rehearsal_end: string
+          rehearsal_id: number
+          rehearsal_location: string
+          rehearsal_repertoire: string
+          rehearsal_start: string
+          rehearsal_title: string
+          rehearsal_type: string
+          sign_in_time: string
+          status: Database["public"]["Enums"]["attendanceStatus"]
+          updated_at: string
+          user_id: string
+        }[]
+      }
       president_capability_keys: { Args: never; Returns: string[] }
+      president_decide_attendance_change_request: {
+        Args: {
+          p_approve: boolean
+          p_force?: boolean
+          p_reject_reason?: string
+          p_request_id: string
+        }
+        Returns: Json
+      }
+      president_decide_leave_request: {
+        Args: {
+          p_approve: boolean
+          p_reject_reason?: string
+          p_request_id: string
+        }
+        Returns: Json
+      }
+      president_decide_membership_request: {
+        Args: { p_approve: boolean; p_user_id: string }
+        Returns: Json
+      }
+      president_list_attendance_change_requests: {
+        Args: never
+        Returns: {
+          created_at: string
+          decided_at: string
+          from_status: Database["public"]["Enums"]["attendanceStatus"]
+          reason: string
+          rehearsal_end: string
+          rehearsal_id: number
+          rehearsal_location: string
+          rehearsal_repertoire: string
+          rehearsal_start: string
+          rehearsal_title: string
+          rehearsal_type: string
+          reject_reason: string
+          request_id: string
+          requested_by: string
+          requester_instrument: string
+          requester_name: string
+          status: Database["public"]["Enums"]["attendanceChangeRequestStatus"]
+          target_instrument: string
+          target_name: string
+          target_user_id: string
+          to_status: Database["public"]["Enums"]["attendanceStatus"]
+        }[]
+      }
+      president_list_leave_requests: {
+        Args: never
+        Returns: {
+          attachment_url: string
+          created_at: string
+          reason: string
+          rehearsal_end: string
+          rehearsal_id: number
+          rehearsal_location: string
+          rehearsal_repertoire: string
+          rehearsal_start: string
+          rehearsal_title: string
+          rehearsal_type: string
+          reject_reason: string
+          request_id: string
+          status: Database["public"]["Enums"]["leaveStatus"]
+          target_status: Database["public"]["Enums"]["attendanceStatus"]
+          user_id: string
+          user_instrument: string
+          user_name: string
+        }[]
+      }
+      president_list_membership_requests: {
+        Args: never
+        Returns: {
+          created_at: string
+          email: string
+          full_name: string
+          instrument: string
+          user_id: string
+        }[]
+      }
+      president_require_capability: {
+        Args: { p_capability: string }
+        Returns: undefined
+      }
+      president_update_attendance: {
+        Args: {
+          p_rehearsal_id: number
+          p_status: Database["public"]["Enums"]["attendanceStatus"]
+          p_user_id: string
+        }
+        Returns: Json
+      }
       principal_instruments: {
         Args: { p_principal: string }
         Returns: string[]
