@@ -10,7 +10,7 @@ export type Database = {
   // Allows to automatically instantiate createClient with right options
   // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
   __InternalSupabase: {
-    PostgrestVersion: "14.15"
+    PostgrestVersion: "14.17"
   }
   public: {
     Tables: {
@@ -718,6 +718,45 @@ export type Database = {
           session_token?: string | null
           status?: Database["public"]["Enums"]["profileStatus"] | null
           wechat_openid?: string | null
+        }
+        Relationships: []
+      }
+      rehearsal_locations: {
+        Row: {
+          active: boolean
+          address: string | null
+          created_at: string
+          id: string
+          lat: number
+          lng: number
+          name: string
+          radius_m: number
+          sort_order: number
+          updated_at: string
+        }
+        Insert: {
+          active?: boolean
+          address?: string | null
+          created_at?: string
+          id?: string
+          lat: number
+          lng: number
+          name: string
+          radius_m?: number
+          sort_order?: number
+          updated_at?: string
+        }
+        Update: {
+          active?: boolean
+          address?: string | null
+          created_at?: string
+          id?: string
+          lat?: number
+          lng?: number
+          name?: string
+          radius_m?: number
+          sort_order?: number
+          updated_at?: string
         }
         Relationships: []
       }
@@ -2289,6 +2328,17 @@ export type Database = {
           name: string
           platform: string
           trusted: boolean
+        }[]
+      }
+      list_rehearsal_locations: {
+        Args: never
+        Returns: {
+          address: string
+          id: string
+          lat: number
+          lng: number
+          name: string
+          radius_m: number
         }[]
       }
       log_client_errors: { Args: { rows: Json }; Returns: undefined }
