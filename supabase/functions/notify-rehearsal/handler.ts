@@ -176,7 +176,8 @@ async function sendMailBatch(
 
   const readResponse = async (): Promise<string> => {
     while (true) {
-      const { value } = await reader.read()
+      const { value, done } = await reader.read()
+      if (done) throw new Error('SMTP connection closed')
       if (value) buffer += decoder.decode(value, { stream: true })
       const lines = buffer.split('\r\n')
       const first = lines.findIndex((line) => /^\d{3}[ -]/.test(line))
