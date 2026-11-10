@@ -10,7 +10,7 @@ export type Database = {
   // Allows to automatically instantiate createClient with right options
   // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
   __InternalSupabase: {
-    PostgrestVersion: "14.15"
+    PostgrestVersion: "14.17"
   }
   public: {
     Tables: {
@@ -2407,6 +2407,11 @@ export type Database = {
         Args: { p_approve: boolean; p_user_id: string }
         Returns: Json
       }
+      president_delete_announcement: { Args: { p_id: string }; Returns: Json }
+      president_delete_rehearsal: {
+        Args: { p_rehearsal_id: number }
+        Returns: Json
+      }
       president_list_attendance_change_requests: {
         Args: never
         Returns: {
@@ -2465,9 +2470,35 @@ export type Database = {
           user_id: string
         }[]
       }
+      president_pending_counts: {
+        Args: never
+        Returns: {
+          attendance_change_pending: number
+          leave_pending: number
+          membership_pending: number
+        }[]
+      }
+      president_publish_announcement: {
+        Args: {
+          p_content: string
+          p_end_time: string
+          p_replace_active?: boolean
+          p_title: string
+        }
+        Returns: Json
+      }
       president_require_capability: {
         Args: { p_capability: string }
         Returns: undefined
+      }
+      president_update_announcement: {
+        Args: {
+          p_content: string
+          p_end_time: string
+          p_id: string
+          p_title: string
+        }
+        Returns: Json
       }
       president_update_attendance: {
         Args: {
@@ -2475,6 +2506,10 @@ export type Database = {
           p_status: Database["public"]["Enums"]["attendanceStatus"]
           p_user_id: string
         }
+        Returns: Json
+      }
+      president_update_rehearsal: {
+        Args: { p_pieces?: Json; p_rehearsal: Json; p_rehearsal_id: number }
         Returns: Json
       }
       principal_instruments: {
