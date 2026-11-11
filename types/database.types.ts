@@ -2265,6 +2265,10 @@ export type Database = {
         Args: { p_device_id: string; p_self_device_id: string }
         Returns: undefined
       }
+      delete_schedule_booking: {
+        Args: { p_reason?: string; p_schedule_id: number }
+        Returns: Json
+      }
       ensure_attendance_roster: {
         Args: { p_rehearsal_ids?: number[] }
         Returns: number
