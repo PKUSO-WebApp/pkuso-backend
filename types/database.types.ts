@@ -2030,53 +2030,12 @@ export type Database = {
           is_principal: boolean | null
           is_section_leader: boolean | null
           join_date: string | null
+          leadership_position:
+            | Database["public"]["Enums"]["leadershipPosition"]
+            | null
           phone_number: string | null
           role: Database["public"]["Enums"]["profileRole"] | null
           status: Database["public"]["Enums"]["profileStatus"] | null
-        }
-        Insert: {
-          avatar_url?: string | null
-          birthday?: never
-          college?: never
-          created_at?: string | null
-          email?: never
-          full_name?: string | null
-          hide_birthday?: boolean | null
-          hide_college?: boolean | null
-          hide_email?: boolean | null
-          hide_join_date?: boolean | null
-          hide_phone?: boolean | null
-          id?: string | null
-          instrument?: string | null
-          is_in_orchestra?: boolean | null
-          is_principal?: boolean | null
-          is_section_leader?: boolean | null
-          join_date?: string | null
-          phone_number?: never
-          role?: Database["public"]["Enums"]["profileRole"] | null
-          status?: Database["public"]["Enums"]["profileStatus"] | null
-        }
-        Update: {
-          avatar_url?: string | null
-          birthday?: never
-          college?: never
-          created_at?: string | null
-          email?: never
-          full_name?: string | null
-          hide_birthday?: boolean | null
-          hide_college?: boolean | null
-          hide_email?: boolean | null
-          hide_join_date?: boolean | null
-          hide_phone?: boolean | null
-          id?: string | null
-          instrument?: string | null
-          is_in_orchestra?: boolean | null
-          is_principal?: boolean | null
-          is_section_leader?: boolean | null
-          join_date?: string | null
-          phone_number?: never
-          role?: Database["public"]["Enums"]["profileRole"] | null
-          status?: Database["public"]["Enums"]["profileStatus"] | null
         }
         Relationships: []
       }
