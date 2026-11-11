@@ -388,6 +388,56 @@ export type Database = {
           },
         ]
       }
+      leadership_positions: {
+        Row: {
+          appointed_at: string
+          appointed_by: string | null
+          position: Database["public"]["Enums"]["leadershipPosition"]
+          user_id: string
+        }
+        Insert: {
+          appointed_at?: string
+          appointed_by?: string | null
+          position: Database["public"]["Enums"]["leadershipPosition"]
+          user_id: string
+        }
+        Update: {
+          appointed_at?: string
+          appointed_by?: string | null
+          position?: Database["public"]["Enums"]["leadershipPosition"]
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "leadership_positions_appointed_by_fkey"
+            columns: ["appointed_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "leadership_positions_appointed_by_fkey"
+            columns: ["appointed_by"]
+            isOneToOne: false
+            referencedRelation: "profiles_roster"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "leadership_positions_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: true
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "leadership_positions_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: true
+            referencedRelation: "profiles_roster"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       leave_requests: {
         Row: {
           attachment_url: string | null
@@ -2103,6 +2153,14 @@ export type Database = {
       }
     }
     Functions: {
+      admin_assign_leadership_position: {
+        Args: {
+          p_actor_id: string
+          p_position: Database["public"]["Enums"]["leadershipPosition"]
+          p_user_id: string
+        }
+        Returns: undefined
+      }
       admin_decide_attendance_change_request: {
         Args: {
           p_actor_id: string
@@ -2115,6 +2173,14 @@ export type Database = {
       }
       admin_grant_capability: {
         Args: { p_actor_id: string; p_capability: string; p_user_id: string }
+        Returns: undefined
+      }
+      admin_remove_leadership_position: {
+        Args: {
+          p_actor_id: string
+          p_position: Database["public"]["Enums"]["leadershipPosition"]
+          p_user_id: string
+        }
         Returns: undefined
       }
       admin_remove_president: {
@@ -2145,6 +2211,10 @@ export type Database = {
         }
         Returns: undefined
       }
+      admin_remove_vice_president: {
+        Args: { p_actor_id: string; p_user_id: string }
+        Returns: undefined
+      }
       admin_revoke_capability: {
         Args: { p_actor_id: string; p_capability: string; p_user_id: string }
         Returns: undefined
@@ -2163,6 +2233,10 @@ export type Database = {
       }
       admin_set_section_leader: {
         Args: { p_actor_id: string; p_leader_id: string; p_section: string }
+        Returns: undefined
+      }
+      admin_set_vice_president: {
+        Args: { p_actor_id: string; p_user_id: string }
         Returns: undefined
       }
       archive_share_user_annotation: {
@@ -2357,6 +2431,7 @@ export type Database = {
       }
       log_client_errors: { Args: { rows: Json }; Returns: undefined }
       my_capabilities: { Args: never; Returns: string[] }
+      my_leadership_position: { Args: never; Returns: string }
       my_leadership_roles: {
         Args: never
         Returns: {
@@ -2667,6 +2742,7 @@ export type Database = {
         | "rejected"
         | "canceled"
       attendanceStatus: "present" | "late" | "absent" | "excused" | "exempt"
+      leadershipPosition: "president" | "vice_president"
       leaveStatus:
         | "pending"
         | "approved"
@@ -2815,6 +2891,7 @@ export const Constants = {
         "canceled",
       ],
       attendanceStatus: ["present", "late", "absent", "excused", "exempt"],
+      leadershipPosition: ["president", "vice_president"],
       leaveStatus: ["pending", "approved", "rejected", "withdrawn", "canceled"],
       notificationCategory: [
         "attendance",
