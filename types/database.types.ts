@@ -10,7 +10,7 @@ export type Database = {
   // Allows to automatically instantiate createClient with right options
   // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
   __InternalSupabase: {
-    PostgrestVersion: "14.15"
+    PostgrestVersion: "14.17"
   }
   public: {
     Tables: {
@@ -531,6 +531,42 @@ export type Database = {
           instrument_name?: string | null
         }
         Relationships: []
+      }
+      member_reactions: {
+        Row: {
+          flowers_count: number
+          likes_count: number
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          flowers_count?: number
+          likes_count?: number
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          flowers_count?: number
+          likes_count?: number
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "member_reactions_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: true
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "member_reactions_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: true
+            referencedRelation: "profiles_roster"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       notifications: {
         Row: {
@@ -2018,6 +2054,7 @@ export type Database = {
           college: string | null
           created_at: string | null
           email: string | null
+          flowers_count: number | null
           full_name: string | null
           hide_birthday: boolean | null
           hide_college: boolean | null
@@ -2033,6 +2070,7 @@ export type Database = {
           leadership_position:
             | Database["public"]["Enums"]["leadershipPosition"]
             | null
+          likes_count: number | null
           phone_number: string | null
           role: Database["public"]["Enums"]["profileRole"] | null
           status: Database["public"]["Enums"]["profileStatus"] | null
@@ -2112,6 +2150,10 @@ export type Database = {
       }
     }
     Functions: {
+      add_member_reactions: {
+        Args: { p_flowers?: number; p_likes?: number; p_target_user_id: string }
+        Returns: Json
+      }
       admin_assign_leadership_position: {
         Args: {
           p_actor_id: string
